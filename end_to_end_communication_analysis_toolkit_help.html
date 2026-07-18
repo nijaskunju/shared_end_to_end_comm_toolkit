@@ -69,7 +69,7 @@
       <h2>1) Toolkit Architecture</h2>
       <ul>
         <li><b>Input Channel Model:</b> Imported frequency response H(f) from RST/RSP is converted to an impulse response h(t) through IFFT-based FIR extraction.</li>
-        <li><b>Transmit Chain:</b> Bits -> Gray-coded M-QAM mapping -> RRC pulse shaping -> oversampled baseband -> RF upconversion at configured center frequency.</li>
+        <li><b>Transmit Chain:</b> Bits -> Gray-coded M-QAM mapping -> RRC pulse shaping -> oversampled baseband -> RF upconversion at configured center frequency (or active hopping frequency).</li>
         <li><b>Propagation/Channel:</b> RF waveform is convolved with h(t), representing the selected Tx-Rx coupling path from the imported file.</li>
         <li><b>Noise Model:</b> Either direct SNR-mode AWGN or Tx power + broadband Rx noise mode with power-consistent noise injection.</li>
         <li><b>Receiver Chain:</b> Channel estimation + deconvolution, timing alignment, RF downconversion, matched filtering, symbol recovery, hard demapping, BER/EVM/SNR extraction.</li>
@@ -84,7 +84,7 @@
         <li><b>FIR synthesis:</b> A finite impulse response is derived from H(f) to obtain time-domain channel memory.</li>
         <li><b>QAM generation:</b> Random bits are mapped to QAM symbols with Gray coding to reduce bit-error sensitivity for nearest-neighbor symbol errors.</li>
         <li><b>Pulse shaping:</b> RRC filtering controls inter-symbol interference and spectral occupancy.</li>
-        <li><b>Upconversion:</b> Baseband symbols are shifted to RF using configured carrier frequency.</li>
+        <li><b>Upconversion:</b> Baseband symbols are shifted to RF using configured carrier frequency, or per-frame hopping carrier when hopping is enabled.</li>
         <li><b>Channel convolution:</b> RF transmit sequence is filtered by h(t), producing received RF signal.</li>
         <li><b>Noise injection:</b>
           <ul>
@@ -129,6 +129,8 @@
           <tr><td>Samples/Symbol</td><td>Digital oversampling factor.</td><td>Improves timing/filter modeling and spectrum smoothness. Raises computation cost and affects FFT bin spacing.</td></tr>
           <tr><td>Channel Taps</td><td>Time-domain FIR length used for channel representation/equalization support.</td><td>Too short may truncate multipath energy; too long can increase estimation noise and complexity.</td></tr>
           <tr><td>SNR (dB)</td><td>AWGN ratio in SNR mode.</td><td>Controls additive noise directly. Theoretical BER comparison is based on this/derived effective SNR.</td></tr>
+          <tr><td>Frequency Hopping</td><td>Enables per-frame carrier switching using user list in GHz.</td><td>When enabled, each frame uses the next hopping center frequency and wraps after the last value. Useful for robustness studies across in-band carrier offsets.</td></tr>
+          <tr><td>Hopping Frequencies in GHz</td><td>Comma-separated center frequencies. Minimum 3 values required.</td><td>All entries must be strictly inside imported RSP bandwidth window around file center frequency. Out-of-range values are rejected before run.</td></tr>
           <tr><td>Noise Input Mode</td><td>Switch between abstract SNR mode and physical power/noise mode.</td><td>Determines whether noise is model-driven by SNR or physically parameterized by Tx power and broadband Rx noise.</td></tr>
           <tr><td>Tx Power (dBm)</td><td>Transmit power reference in power/noise mode.</td><td>Scales transmitted RF envelope. With fixed channel gain, received signal power shifts linearly in dB with Tx power.</td></tr>
           <tr><td>Rx Broadband Noise (dBm)</td><td>Total integrated receiver noise over full analyzed bandwidth.</td><td>Noise shown in RX spectrum per-bin appears lower than broadband value by approximately 10log10(Nbins).</td></tr>
@@ -139,6 +141,21 @@
           <tr><td>Plot Panels</td><td>Panel-selection checkboxes for output figure.</td><td>Allows targeted diagnostics (e.g., only constellation + RX spectrum) without changing signal processing core.</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="card">
+      <h2>4.1) Frequency Hopping Mode</h2>
+      <ul>
+        <li><b>Enable:</b> Check <b>Frequency Hopping</b> in the parameter panel.</li>
+        <li><b>Input format:</b> Enter comma-separated GHz values, for example <code>28.02, 28.08, 28.14</code>.</li>
+        <li><b>Minimum count:</b> At least 3 frequencies are required.</li>
+        <li><b>Range rule:</b> Every hop frequency must be strictly inside the imported RSP frequency window: (fc - BW/2, fc + BW/2).</li>
+        <li><b>Execution rule:</b> Frame 1 uses hop 1, frame 2 uses hop 2, and so on; after the last hop, sequence wraps to hop 1.</li>
+        <li><b>Plots and logs:</b> Active hop carrier is shown during processing so each frame can be traced to its carrier.</li>
+      </ul>
+      <div class="note">
+        <b>Important:</b> RX RF spectrum axis limits remain locked to the imported RSP center frequency and bandwidth, so frame-to-frame comparisons stay consistent.
+      </div>
     </div>
 
     <div class="card">
