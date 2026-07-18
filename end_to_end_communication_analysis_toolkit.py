@@ -326,14 +326,14 @@ class RSTImportWorker(QThread):
             avg_ber = acc_ber / (i_frame + 1)
 
             panel_defs = []
-            if show_constellation:
-                panel_defs.append("constellation")
-            if show_rx_rf_spectrum:
-                panel_defs.append("rx_rf_spectrum")
             if show_channel_freq:
                 panel_defs.append("channel_freq")
             if show_channel_delay:
                 panel_defs.append("channel_delay")
+            if show_rx_rf_spectrum:
+                panel_defs.append("rx_rf_spectrum")
+            if show_constellation:
+                panel_defs.append("constellation")
 
             fig, axes = plt.subplots(1, len(panel_defs), figsize=(5 * len(panel_defs), 4), tight_layout=True)
             if len(panel_defs) == 1:
@@ -745,6 +745,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         form.addRow("Bandwidth:", self.bw_spinbox)
         form.addRow("Modulation Scheme:", self.qam_combo)
         form.addRow("Data Rate:", self.data_rate_spinbox)
+        form.addRow("Number of Symbols:", self.num_symbols_spinbox)
         form.addRow("Samples/Symbol:", self.sps_spinbox)
         form.addRow("RRC Beta:", self.beta_spinbox)
         form.addRow("RRC Span:", self.span_spinbox)
@@ -752,11 +753,10 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         form.addRow("Noise Input Mode:", noise_mode_widget)
         form.addRow("Tx Power:", self.tx_power_spinbox)
         form.addRow("Rx Broadband Noise:", self.rx_noise_spinbox)
-        form.addRow("GIF FPS:", self.gif_fps_spinbox)
 
-        # Keep existing advanced inputs used by the processing chain.
-        form.addRow("Number of Symbols:", self.num_symbols_spinbox)
+        # Keep existing advanced input used by the processing chain.
         form.addRow("Channel Taps:", self.taps_spinbox)
+        form.addRow("GIF FPS:", self.gif_fps_spinbox)
 
         self.bw_est_label = QLabel()
         self.bw_est_label.setWordWrap(True)
@@ -779,21 +779,21 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         group = QGroupBox("Plot Panels")
         vbox = QVBoxLayout()
 
-        self.chk_constellation = QCheckBox("Constellation")
-        self.chk_constellation.setChecked(True)
-        vbox.addWidget(self.chk_constellation)
+        self.chk_channel_freq = QCheckBox("Channel Freq vs Power")
+        self.chk_channel_freq.setChecked(True)
+        vbox.addWidget(self.chk_channel_freq)
+
+        self.chk_channel_delay = QCheckBox("Channel Time vs Power")
+        self.chk_channel_delay.setChecked(True)
+        vbox.addWidget(self.chk_channel_delay)
 
         self.chk_rx_rf_spectrum = QCheckBox("RX RF Spectrum")
         self.chk_rx_rf_spectrum.setChecked(True)
         vbox.addWidget(self.chk_rx_rf_spectrum)
 
-        self.chk_channel_freq = QCheckBox("Channel Freq vs Power")
-        self.chk_channel_freq.setChecked(True)
-        vbox.addWidget(self.chk_channel_freq)
-
-        self.chk_channel_delay = QCheckBox("Channel Delay: Time vs Power")
-        self.chk_channel_delay.setChecked(True)
-        vbox.addWidget(self.chk_channel_delay)
+        self.chk_constellation = QCheckBox("Constellation")
+        self.chk_constellation.setChecked(True)
+        vbox.addWidget(self.chk_constellation)
 
         group.setLayout(vbox)
         return group
@@ -894,8 +894,36 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         save_row.addWidget(self.btn_save_gif)
         gvbox.addLayout(save_row)
 
+        control_row = QHBoxLayout()
+        self.btn_prev_frame = QPushButton("Previous")
+        self.btn_prev_frame.setEnabled(False)
+        self.btn_prev_frame.clicked.connect(self._show_previous_gif_frame)
+        control_row.addWidget(self.btn_prev_frame)
+
+        self.btn_play_gif = QPushButton("Play")
+        self.btn_play_gif.setEnabled(False)
+        self.btn_play_gif.clicked.connect(self._play_gif)
+        control_row.addWidget(self.btn_play_gif)
+
+        self.btn_pause_gif = QPushButton("Pause")
+        self.btn_pause_gif.setEnabled(False)
+        self.btn_pause_gif.clicked.connect(self._pause_gif)
+        control_row.addWidget(self.btn_pause_gif)
+
+        self.btn_stop_gif = QPushButton("Stop")
+        self.btn_stop_gif.setEnabled(False)
+        self.btn_stop_gif.clicked.connect(self._stop_gif)
+        control_row.addWidget(self.btn_stop_gif)
+
+        self.btn_next_frame = QPushButton("Next")
+        self.btn_next_frame.setEnabled(False)
+        self.btn_next_frame.clicked.connect(self._show_next_gif_frame)
+        control_row.addWidget(self.btn_next_frame)
+
+        gvbox.addLayout(control_row)
+
         gif_tab.setLayout(gvbox)
-        tabs.addTab(gif_tab, "Constellation and CIR")
+        tabs.addTab(gif_tab, "Output Plot Panel")
 
         self._tabs = tabs
         return tabs
@@ -1077,23 +1105,24 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.gif_label.clear()
         self.gif_label.setText("Analysis running. GIF will appear here on completion ...")
         self.btn_save_gif.setEnabled(False)
+        self._set_gif_controls_enabled(False)
 
         params = self._collect_params()
         selected_panels = []
-        if params["plot_constellation"]:
-            selected_panels.append("Constellation")
-        if params["plot_rx_rf_spectrum"]:
-            selected_panels.append("RX RF Spectrum")
         if params["plot_channel_freq"]:
             selected_panels.append("Channel Freq vs Power")
         if params["plot_channel_delay"]:
-            selected_panels.append("Channel Delay: Time vs Power")
+            selected_panels.append("Channel Time vs Power")
+        if params["plot_rx_rf_spectrum"]:
+            selected_panels.append("RX RF Spectrum")
+        if params["plot_constellation"]:
+            selected_panels.append("Constellation")
         if not selected_panels:
             selected_panels = [
-                "Constellation",
-                "RX RF Spectrum",
                 "Channel Freq vs Power",
-                "Channel Delay: Time vs Power",
+                "Channel Time vs Power",
+                "RX RF Spectrum",
+                "Constellation",
             ]
 
         self.status_log.append(
@@ -1173,6 +1202,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self._gif_path = gif_path
         if not os.path.exists(gif_path):
             self.gif_label.setText(f"GIF not found: {gif_path}")
+            self._set_gif_controls_enabled(False)
             return
 
         self._stop_gif_animation()
@@ -1183,16 +1213,19 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             self.gif_label.setText(f"Unable to load GIF: {exc}")
             self._gif_frames = []
             self._gif_durations = []
+            self._set_gif_controls_enabled(False)
             return
 
         if not frames:
             self.gif_label.setText(f"Unable to load GIF: {gif_path}")
+            self._set_gif_controls_enabled(False)
             return
 
         self._gif_frames = frames
         self._gif_durations = durations
         self._gif_frame_index = 0
         self.btn_save_gif.setEnabled(True)
+        self._set_gif_controls_enabled(True)
 
         if hasattr(self, "_tabs"):
             self._tabs.setCurrentIndex(1)
@@ -1246,6 +1279,45 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self._gif_frames = []
         self._gif_durations = []
         self._gif_frame_index = 0
+        self._set_gif_controls_enabled(False)
+
+    def _set_gif_controls_enabled(self, enabled):
+        self.btn_prev_frame.setEnabled(enabled)
+        self.btn_play_gif.setEnabled(enabled)
+        self.btn_pause_gif.setEnabled(enabled)
+        self.btn_stop_gif.setEnabled(enabled)
+        self.btn_next_frame.setEnabled(enabled)
+
+    def _play_gif(self):
+        if not self._gif_frames:
+            return
+        self._show_gif_frame(self._gif_frame_index)
+        if len(self._gif_frames) > 1:
+            self._gif_timer.start(self._gif_durations[self._gif_frame_index])
+
+    def _pause_gif(self):
+        self._gif_timer.stop()
+
+    def _stop_gif(self):
+        self._gif_timer.stop()
+        if not self._gif_frames:
+            return
+        self._gif_frame_index = 0
+        self._show_gif_frame(self._gif_frame_index)
+
+    def _show_next_gif_frame(self):
+        if not self._gif_frames:
+            return
+        self._gif_timer.stop()
+        self._gif_frame_index = (self._gif_frame_index + 1) % len(self._gif_frames)
+        self._show_gif_frame(self._gif_frame_index)
+
+    def _show_previous_gif_frame(self):
+        if not self._gif_frames:
+            return
+        self._gif_timer.stop()
+        self._gif_frame_index = (self._gif_frame_index - 1) % len(self._gif_frames)
+        self._show_gif_frame(self._gif_frame_index)
 
     def _save_gif(self):
         if not self._gif_path or not os.path.exists(self._gif_path):
@@ -1269,7 +1341,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.stop_button.setEnabled(False)
 
         if success:
-            self.status_log.append("\nAnalysis complete. GIF is ready in the Constellation and CIR tab.")
+            self.status_log.append("\nAnalysis complete. GIF is ready in the Output Plot Panel tab.")
         else:
             self.status_log.append("\nAnalysis failed. See log above.")
             QMessageBox.critical(self, "Error", "Processing failed. Check the log for details.")
