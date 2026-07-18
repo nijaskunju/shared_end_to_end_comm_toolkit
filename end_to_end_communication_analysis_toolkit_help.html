@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>End to End Communication Analysis Toolkit - Help</title>
+  <style>
+    :root {
+      --bg: #f7f9fc;
+      --fg: #1f2937;
+      --muted: #4b5563;
+      --card: #ffffff;
+      --accent: #0b5cab;
+      --border: #d1d5db;
+    }
+    body {
+      margin: 0;
+      font-family: Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.5;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h1, h2, h3 { color: #111827; }
+    h1 { margin-top: 0; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .muted { color: var(--muted); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      text-align: left;
+      padding: 8px;
+      vertical-align: top;
+    }
+    th { background: #eef2ff; }
+    code {
+      background: #eef2f7;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .note {
+      background: #ecfeff;
+      border-left: 4px solid var(--accent);
+      padding: 10px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>End to End Communication Analysis Toolkit - Help</h1>
+    <p class="muted">This document explains signal-flow architecture, RST/RSP file interpretation, and theory behind each technical input so users can understand and learn the workflow.</p>
+
+    <div class="card">
+      <h2>1) Toolkit Architecture</h2>
+      <ul>
+        <li><b>Input Channel Model:</b> Imported frequency response H(f) from RST/RSP is converted to an impulse response h(t) through IFFT-based FIR extraction.</li>
+        <li><b>Transmit Chain:</b> Bits -> Gray-coded M-QAM mapping -> RRC pulse shaping -> oversampled baseband -> RF upconversion at configured center frequency.</li>
+        <li><b>Propagation/Channel:</b> RF waveform is convolved with h(t), representing the selected Tx-Rx coupling path from the imported file.</li>
+        <li><b>Noise Model:</b> Either direct SNR-mode AWGN or Tx power + broadband Rx noise mode with power-consistent noise injection.</li>
+        <li><b>Receiver Chain:</b> Channel estimation + deconvolution, timing alignment, RF downconversion, matched filtering, symbol recovery, hard demapping, BER/EVM/SNR extraction.</li>
+        <li><b>Per-frame Analytics:</b> Frequency response, delay profile, RX RF spectrum, and constellation panels are generated and exported as animated GIF.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>2) Signal Processing Flow (Detailed)</h2>
+      <ol>
+        <li><b>H(f) extraction:</b> For each frame, the selected Tx-Rx response vector is read from channel file.</li>
+        <li><b>FIR synthesis:</b> A finite impulse response is derived from H(f) to obtain time-domain channel memory.</li>
+        <li><b>QAM generation:</b> Random bits are mapped to QAM symbols with Gray coding to reduce bit-error sensitivity for nearest-neighbor symbol errors.</li>
+        <li><b>Pulse shaping:</b> RRC filtering controls inter-symbol interference and spectral occupancy.</li>
+        <li><b>Upconversion:</b> Baseband symbols are shifted to RF using configured carrier frequency.</li>
+        <li><b>Channel convolution:</b> RF transmit sequence is filtered by h(t), producing received RF signal.</li>
+        <li><b>Noise injection:</b>
+          <ul>
+            <li>SNR mode: AWGN level is set by user SNR.</li>
+            <li>Power/Noise mode: transmit power scaling and broadband Rx-noise-based AWGN are applied.</li>
+          </ul>
+        </li>
+        <li><b>Channel estimation and equalization:</b> Pilot-assisted LS/Wiener estimate is used for deconvolution/equalization.</li>
+        <li><b>Synchronization:</b> Cross-correlation aligns the recovered sequence to transmitted timing.</li>
+        <li><b>Downconversion + matched filtering:</b> RF is shifted back to baseband and filtered with RRC before symbol sampling.</li>
+        <li><b>Decision and KPIs:</b> Symbols are demapped to bits and BER, theory BER, Peak SNR, Effective SNR, and EVM are computed.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2>3) RST / RSP File Format (Channel Import)</h2>
+      <p>The toolkit expects HDF5-based channel files with a <code>/Links</code> hierarchy. The first link is used by default.</p>
+      <ul>
+        <li><code>/Links/&lt;Link&gt;/Transmitter</code> - Tx antenna metadata</li>
+        <li><code>/Links/&lt;Link&gt;/Receiver</code> - Rx antenna metadata</li>
+        <li><code>/Links/&lt;Link&gt;/Waveform</code> - bandwidth, center frequency, sounding counts</li>
+        <li><code>/Links/&lt;Link&gt;/Channel Characterization/Response</code> - frequency response (real/imag interleaved)</li>
+        <li><code>/Links/&lt;Link&gt;/Channel Characterization/Time Array</code> - frame time axis</li>
+      </ul>
+      <div class="note">
+        <b>Note:</b> If you typed <b>SRT</b>, this toolkit currently supports the same imported channel structure used by <b>RST/RSP</b> style files in this project.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>4) User Inputs - Technical Meaning and Theory</h2>
+      <table>
+        <thead>
+          <tr><th>Input</th><th>Technical Meaning</th><th>Theory / Practical Impact</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Modulation Scheme</td><td>Constellation size M for square M-QAM.</td><td>Spectral efficiency scales with log2(M). Higher M reduces symbol spacing, so required SNR rises rapidly for same BER.</td></tr>
+          <tr><td>Center Frequency (GHz)</td><td>RF carrier for passband conversion.</td><td>Defines RF translation and x-axis center for RX spectrum. Also influences physical interpretation of channel selectivity.</td></tr>
+          <tr><td>Bandwidth (MHz)</td><td>Frequency span of imported channel response.</td><td>Inverse relation with delay resolution (larger BW -> finer delay resolution). Sets scale for frequency and delay plots.</td></tr>
+          <tr><td>Number of Symbols</td><td>QAM symbols processed per frame.</td><td>BER estimate variance decreases with sample size. Too few symbols can cause unstable BER/EVM readings.</td></tr>
+          <tr><td>Data Rate (Mbps)</td><td>Target bit throughput.</td><td>Symbol rate derived as Rb / log2(M). Higher rate increases required occupied bandwidth and receiver processing load.</td></tr>
+          <tr><td>Samples/Symbol</td><td>Digital oversampling factor.</td><td>Improves timing/filter modeling and spectrum smoothness. Raises computation cost and affects FFT bin spacing.</td></tr>
+          <tr><td>Channel Taps</td><td>Time-domain FIR length used for channel representation/equalization support.</td><td>Too short may truncate multipath energy; too long can increase estimation noise and complexity.</td></tr>
+          <tr><td>SNR (dB)</td><td>AWGN ratio in SNR mode.</td><td>Controls additive noise directly. Theoretical BER comparison is based on this/derived effective SNR.</td></tr>
+          <tr><td>Noise Input Mode</td><td>Switch between abstract SNR mode and physical power/noise mode.</td><td>Determines whether noise is model-driven by SNR or physically parameterized by Tx power and broadband Rx noise.</td></tr>
+          <tr><td>Tx Power (dBm)</td><td>Transmit power reference in power/noise mode.</td><td>Scales transmitted RF envelope. With fixed channel gain, received signal power shifts linearly in dB with Tx power.</td></tr>
+          <tr><td>Rx Broadband Noise (dBm)</td><td>Total integrated receiver noise over full analyzed bandwidth.</td><td>Noise shown in RX spectrum per-bin appears lower than broadband value by approximately 10log10(Nbins).</td></tr>
+          <tr><td>RRC Beta</td><td>Roll-off factor of root-raised cosine pulse shaping.</td><td>Lower beta improves spectral compactness but increases time-domain ringing/sensitivity; higher beta relaxes filtering at cost of occupied bandwidth.</td></tr>
+          <tr><td>RRC Span</td><td>RRC filter duration in symbols.</td><td>Longer span better approximates ideal pulse but adds latency and computational burden.</td></tr>
+          <tr><td>GIF FPS</td><td>Playback frame rate for exported animation.</td><td>Visualization-only parameter; does not affect DSP results.</td></tr>
+          <tr><td>Transmitter / Receiver Antenna</td><td>Selects coupling pair in imported multi-antenna dataset.</td><td>Chooses a specific channel transfer function; BER/SNR/EVM may differ strongly between pairs.</td></tr>
+          <tr><td>Plot Panels</td><td>Panel-selection checkboxes for output figure.</td><td>Allows targeted diagnostics (e.g., only constellation + RX spectrum) without changing signal processing core.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>5) Output Metrics</h2>
+      <ul>
+        <li><b>Instant BER:</b> Bit error ratio for current frame only.</li>
+        <li><b>Theory BER:</b> Analytical QAM BER estimate under AWGN assumptions using estimated SNR.</li>
+        <li><b>Average BER:</b> Running average across processed frames for stability.</li>
+        <li><b>Peak SNR:</b> Peak received RF power against configured broadband noise reference.</li>
+        <li><b>Effective SNR:</b> Symbol-domain estimate derived from gain-aligned error vector power.</li>
+        <li><b>EVM (%):</b> RMS error-vector magnitude: 100 * sqrt(Perror/Psignal).</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>6) RX RF Spectrum Unit Note</h2>
+      <p>RX RF spectrum is displayed as <b>dBm/bin</b> (power per FFT bin), not integrated broadband dBm. The plot includes RBW and expected noise-floor guidance for interpretation.</p>
+    </div>
+
+    <div class="card">
+      <h2>7) Output Plot Details and Interpretation</h2>
+      <table>
+        <thead>
+          <tr><th>Plot</th><th>What It Represents</th><th>Units / Axes</th><th>How to Interpret</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Constellation</td>
+            <td>Recovered symbol cloud (RX) overlaid with transmitted symbol points (TX) for the selected frame.</td>
+            <td>X: In-phase (I), Y: Quadrature (Q), normalized symbol space.</td>
+            <td>Tight clusters near ideal points indicate low EVM and low BER. Smearing/rotation/spread indicates noise, residual ISI, phase/frequency error, or imperfect equalization.</td>
+          </tr>
+          <tr>
+            <td>RX RF Spectrum (Noisy)</td>
+            <td>Spectrum of the noisy received RF waveform after channel convolution and AWGN injection.</td>
+            <td>X: Frequency (MHz), Y: Power (dBm/bin), title includes RBW.</td>
+            <td>Use this to inspect occupied bandwidth and noise floor. Compare expected floor line with measured floor. Signal peak-to-floor separation gives intuitive SNR trend.</td>
+          </tr>
+          <tr>
+            <td>Channel Freq vs Power</td>
+            <td>Magnitude of imported channel transfer response H(f) for selected Tx-Rx and frame.</td>
+            <td>X: Frequency (MHz), Y: Power/Magnitude in dB scale.</td>
+            <td>Deep notches indicate frequency-selective fading. Flat response implies milder selectivity and often easier equalization.</td>
+          </tr>
+          <tr>
+            <td>Channel Delay: Time vs Power</td>
+            <td>IFFT-based delay profile derived from channel frequency response (multipath energy vs delay).</td>
+            <td>X: Delay (us), Y: Power in dB scale.</td>
+            <td>Early strong taps indicate dominant LOS/early paths. Long delayed taps indicate multipath spread and potential ISI sensitivity.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note">
+        <b>Reading plots together:</b> a selective channel (freq notches + long delay spread) generally causes broader constellation clusters, higher EVM, and higher BER unless SNR/equalization margin is sufficient.
+      </div>
+    </div>
+  </div>
+</body>
+</html>
