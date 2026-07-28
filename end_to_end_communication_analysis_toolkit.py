@@ -320,6 +320,8 @@ class RSTImportWorker(QThread):
             tic = tyme.perf_counter()
             channel_response = response_data[i_frame, tx_index, rx_index, 0, :]
             current_fc_hz = hopping_freqs_hz[i_frame % len(hopping_freqs_hz)] if hopping_enabled else fc
+            hop_idx = (i_frame % len(hopping_freqs_hz)) + 1 if hopping_enabled else 1
+            hop_total = len(hopping_freqs_hz) if hopping_enabled else 1
             qam_system.fc = current_fc_hz
 
             h, symbols, rx_symbols, ber, ber_theory, snr_used_db, peak_snr_db, effective_snr_db, evm_pct, rx_passband = _qam_signal_processing(
@@ -386,25 +388,36 @@ class RSTImportWorker(QThread):
                     n_rf = len(rx_passband)
                     win = np.hamming(n_rf)
                     spec = np.fft.fftshift(np.fft.fft(rx_passband * win))
-                    # Keep displayed spectrum span fixed to imported RSP center/bandwidth.
+                    # Keep displayed spectrum limits fixed to imported RSP center/bandwidth,
+                    # but map FFT bins using the active carrier for correct center placement.
                     f_start_hz = fc - (bw / 2.0)
                     f_stop_hz = fc + (bw / 2.0)
-                    f_rf = np.linspace(f_start_hz, f_stop_hz, n_rf, endpoint=False)
+                    f_rf = np.fft.fftshift(np.fft.fftfreq(n_rf, d=1.0 / qam_system.fs)) + current_fc_hz
                     # Power spectrum per FFT bin (W/bin), then convert to dBm/bin.
                     win_power = max(float(np.sum(win**2)), 1e-30)
                     p_bin_w = (np.abs(spec) ** 2) / (win_power * max(n_rf, 1))
-                    spec_dbm = 10.0 * np.log10(np.maximum(p_bin_w, 1e-30) * 1e3)
-                    ax.plot(f_rf / 1e6, spec_dbm, color="#1976d2", linewidth=1.1)
                     rbw_hz = qam_system.fs / max(n_rf, 1)
-                    p_total_dbm = 10.0 * np.log10(np.maximum(np.sum(p_bin_w), 1e-30) * 1e3)
+                    occ_start_hz = current_fc_hz - (qam_system.fs / 2.0)
+                    occ_stop_hz = current_fc_hz + (qam_system.fs / 2.0)
+
+                    n_rsp = max(int(n_s), 2)
+                    f_rsp = np.linspace(f_start_hz, f_stop_hz, n_rsp)
+                    # Interpolate signal power across full RSP bandwidth without adding synthetic broadband noise.
+                    signal_rsp_w = np.interp(f_rsp, f_rf, p_bin_w, left=0.0, right=0.0)
+                    spec_dbm = 10.0 * np.log10(np.maximum(signal_rsp_w, 1e-30) * 1e3)
+                    ax.plot(
+                        f_rsp / 1e6,
+                        spec_dbm,
+                        color="#1976d2",
+                        linewidth=1.1,
+                    )
+                    p_total_dbm = 10.0 * np.log10(np.maximum(np.sum(signal_rsp_w), 1e-30) * 1e3)
+
                     if noise_mode == "power_noise":
                         title_suffix = f"Tx={tx_power_dbm:.1f} dBm | Noise={rx_noise_dbm:.1f} dBm"
-                        expected_floor_dbm_bin = rx_noise_dbm - 10.0 * np.log10(max(n_rf, 1))
-                        ax.axhline(expected_floor_dbm_bin, color="#455a64", linestyle="--", linewidth=1.0, alpha=0.8)
                         ax.text(
                             0.02,
                             0.04,
-                            f"Expected noise floor: {expected_floor_dbm_bin:.1f} dBm/bin\n"
                             f"Integrated spectrum power: {p_total_dbm:.1f} dBm",
                             transform=ax.transAxes,
                             fontsize=7,
@@ -420,9 +433,13 @@ class RSTImportWorker(QThread):
                         ),
                         fontsize=9,
                     )
+                    ax.axvline(current_fc_hz / 1e6, color="#2e7d32", linestyle="--", linewidth=1.0, alpha=0.9)
+                    ax.axvline(occ_start_hz / 1e6, color="#607d8b", linestyle=":", linewidth=0.9, alpha=0.75)
+                    ax.axvline(occ_stop_hz / 1e6, color="#607d8b", linestyle=":", linewidth=0.9, alpha=0.75)
                     ax.set_xlabel("Frequency (MHz)")
                     ax.set_ylabel("Power (dBm/bin)")
                     ax.set_xlim(f_start_hz / 1e6, f_stop_hz / 1e6)
+                    ax.set_ylim(-160.0, -80.0)
                     ax.grid(True, alpha=0.4)
 
                 elif panel_name == "channel_freq":
@@ -431,6 +448,7 @@ class RSTImportWorker(QThread):
                     ax.set_title("Channel Freq vs Power", fontsize=10)
                     ax.set_xlabel("Frequency (MHz)")
                     ax.set_ylabel("Power (dBW)")
+                    ax.set_ylim(-140.0, -50.0)
                     ax.grid(True, alpha=0.4)
 
                 elif panel_name == "channel_delay":
@@ -440,6 +458,7 @@ class RSTImportWorker(QThread):
                     ax.set_title("Channel Delay: Time vs Power", fontsize=10)
                     ax.set_xlabel("Delay (us)")
                     ax.set_ylabel("Power (dBW)")
+                    ax.set_ylim(-200.0, -100.0)
                     ax.grid(True, alpha=0.4)
 
             buf = io.BytesIO()
@@ -453,7 +472,7 @@ class RSTImportWorker(QThread):
                 i_frame + 1,
                 (
                     f"Frame {i_frame + 1}/{time_samples} | Tx{tx_index + 1}-Rx{rx_index + 1} | {qam_order}-QAM | "
-                    f"Fc={current_fc_hz/1e9:.4f} GHz | "
+                    f"Fc={current_fc_hz/1e9:.4f} GHz | Hop={hop_idx}/{hop_total} | "
                     f"BER={ber:.3e} | Avg={avg_ber:.3e} | Theory={ber_theory:.3e} | "
                     f"PeakSNR={peak_snr_db:.1f} dB | EffSNR={effective_snr_db:.1f} dB | EVM={evm_pct:.2f}% | "
                     f"({toc - tic:.2f}s/frame)"
@@ -691,7 +710,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         self.data_rate_spinbox = QDoubleSpinBox()
         self.data_rate_spinbox.setRange(0.1, 100000)
-        self.data_rate_spinbox.setValue(100)
+        self.data_rate_spinbox.setValue(10)
         self.data_rate_spinbox.setSingleStep(10)
         self.data_rate_spinbox.setDecimals(2)
         self.data_rate_spinbox.setSuffix(" Mbps")
@@ -756,9 +775,10 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.gif_fps_spinbox.setSuffix(" fps")
 
         self.num_symbols_spinbox = QSpinBox()
-        self.num_symbols_spinbox.setRange(100, 10000)
-        self.num_symbols_spinbox.setValue(1000)
+        self.num_symbols_spinbox.setRange(40, 100000)
+        self.num_symbols_spinbox.setValue(160)  # default: 16-QAM * 10
         self.num_symbols_spinbox.setSingleStep(100)
+        self.num_symbols_spinbox.setToolTip("Auto-set to QAM order × 10 when modulation changes; can be overridden manually")
 
         self.taps_spinbox = QSpinBox()
         self.taps_spinbox.setRange(10, 2000)
@@ -799,6 +819,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.snr_spinbox.valueChanged.connect(self._update_bw_estimate)
         self.radio_snr.toggled.connect(self._on_noise_mode_changed)
         self.hopping_enable_chk.toggled.connect(self._on_hopping_mode_changed)
+        self.qam_combo.currentIndexChanged.connect(self._on_qam_changed)
 
         group.setLayout(form)
         self._on_hopping_mode_changed()
@@ -829,11 +850,18 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         group.setLayout(vbox)
         return group
 
+    def _on_qam_changed(self):
+        qam_map = {"4-QAM": 4, "16-QAM": 16, "64-QAM": 64, "256-QAM": 256, "1024-QAM": 1024}
+        qam_order = qam_map.get(self.qam_combo.currentText(), 16)
+        self.num_symbols_spinbox.setValue(qam_order * 10)
+
     def _on_noise_mode_changed(self):
         use_snr = self.radio_snr.isChecked()
         self.snr_spinbox.setEnabled(use_snr)
         self.tx_power_spinbox.setEnabled(not use_snr)
         self.rx_noise_spinbox.setEnabled(not use_snr)
+        if use_snr:
+            self.rx_noise_spinbox.setValue(-120.0)
         self._update_bw_estimate()
 
     def _on_hopping_mode_changed(self):
@@ -1104,6 +1132,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         if rx_index is None:
             rx_index = self.rx_combo.currentIndex()
         noise_mode = "snr" if self.radio_snr.isChecked() else "power_noise"
+        rx_noise_dbm = -120.0 if noise_mode == "snr" else self.rx_noise_spinbox.value()
         return {
             "qam_order": qam_order,
             "center_freq": self.freq_spinbox.value() * 1e9,
@@ -1120,7 +1149,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             "rx_index": int(rx_index),
             "noise_mode": noise_mode,
             "tx_power_dbm": self.tx_power_spinbox.value(),
-            "rx_noise_dbm": self.rx_noise_spinbox.value(),
+            "rx_noise_dbm": rx_noise_dbm,
             "hopping_enabled": self.hopping_enable_chk.isChecked(),
             "hopping_freq_text": self.hopping_freq_edit.text().strip(),
             "plot_constellation": self.chk_constellation.isChecked(),
@@ -1173,24 +1202,25 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             fc_ghz = float(self._file_metadata.get("fc_GHz", self.freq_spinbox.value()))
             bw_mhz = float(self._file_metadata.get("bw_MHz", self.bw_spinbox.value()))
             half_bw_ghz = bw_mhz / 2000.0
-            # Keep frequencies safely inside measured channel span, not at edges.
-            edge_guard_ghz = max((bw_mhz / 1000.0) * 0.01, 1e-6)
-            low_ghz = fc_ghz - half_bw_ghz + edge_guard_ghz
-            high_ghz = fc_ghz + half_bw_ghz - edge_guard_ghz
+            fs_hz = float(params["symbol_rate"]) * float(params["samples_per_symbol"])
+            sig_half_bw_ghz = (fs_hz / 2.0) / 1e9
 
-            if low_ghz >= high_ghz:
-                low_ghz = fc_ghz - half_bw_ghz
-                high_ghz = fc_ghz + half_bw_ghz
+            # Require full occupied signal band [f_hop - fs/2, f_hop + fs/2]
+            # to remain inside imported RSP span [fc_file - BW/2, fc_file + BW/2].
+            low_ghz = fc_ghz - half_bw_ghz + sig_half_bw_ghz
+            high_ghz = fc_ghz + half_bw_ghz - sig_half_bw_ghz
 
-            invalid = [f for f in hopping_freqs_ghz if not (low_ghz < f < high_ghz)]
+            tol_ghz = 1e-9
+            invalid = [f for f in hopping_freqs_ghz if not (low_ghz - tol_ghz <= f <= high_ghz + tol_ghz)]
             if invalid:
                 invalid_str = ", ".join(f"{v:.6f}" for v in invalid)
                 QMessageBox.warning(
                     self,
                     "Hopping Range Error",
                     (
-                        "Hopping frequencies must be inside the RST bandwidth window.\n"
-                        f"Allowed range: ({low_ghz:.6f}, {high_ghz:.6f}) GHz\n"
+                        "Hopping frequencies must keep full occupied signal bandwidth inside the RSP window.\n"
+                        f"Occupied half-bandwidth (fs/2): {sig_half_bw_ghz:.6f} GHz\n"
+                        f"Allowed center range: [{low_ghz:.6f}, {high_ghz:.6f}] GHz\n"
                         f"Invalid entries: {invalid_str}"
                     ),
                 )
