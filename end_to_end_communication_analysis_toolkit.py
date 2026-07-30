@@ -193,6 +193,7 @@ class RSTImportWorker(QThread):
     ber_update = Signal(float, float, float, float, float, float)
     gif_ready = Signal(str)
     file_info = Signal(object)
+    epoch_data_ready = Signal(object)
 
     def __init__(self, file_path, params):
         super().__init__()
@@ -253,7 +254,8 @@ class RSTImportWorker(QThread):
             if not links:
                 raise ValueError("No links found in file.")
 
-            link = links[0]
+            selected_link = self.params.get("tx_link")
+            link = selected_link if (selected_link and selected_link in links) else links[0]
             n_tx = int(fid[f"/Links/{link}/Transmitter"].attrs["Antenna Count"][0])
             n_rx = int(fid[f"/Links/{link}/Receiver"].attrs["Antenna Count"][0])
             n_p = int(fid[f"/Links/{link}/Waveform"].attrs["Channel Soundings"][0])
@@ -308,6 +310,9 @@ class RSTImportWorker(QThread):
 
         acc_ber = 0.0
         gif_frames = []
+        avg_ber_history = []
+        evm_pct_history = []
+        eff_snr_history = []
         self.progress_update.emit(
             0,
             f"Processing {time_samples} frames for Tx{tx_index + 1}-Rx{rx_index + 1} and generating GIF ...",
@@ -333,6 +338,9 @@ class RSTImportWorker(QThread):
 
             acc_ber += ber
             avg_ber = acc_ber / (i_frame + 1)
+            avg_ber_history.append(avg_ber)
+            evm_pct_history.append(evm_pct)
+            eff_snr_history.append(effective_snr_db)
 
             panel_defs = []
             if show_channel_freq:
@@ -493,6 +501,14 @@ class RSTImportWorker(QThread):
             )
             self.gif_ready.emit(gif_path)
 
+        self.epoch_data_ready.emit({
+            "avg_ber": avg_ber_history,
+            "evm_pct": evm_pct_history,
+            "eff_snr_db": eff_snr_history,
+            "frames": list(range(1, len(avg_ber_history) + 1)),
+            "qam_order": qam_order,
+        })
+
 
 class EndToEndCommunicationAnalysisToolkit(QMainWindow):
     """Main UI for End to End Communication Analysis toolkit."""
@@ -558,6 +574,24 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
                 prefix = "Tx" if terminal == "Transmitter" else "Rx"
                 labels.append(f"{prefix}{idx + 1}")
         return labels
+
+    @classmethod
+    def _extract_node_name(cls, fid, lname, terminal):
+        """Read the node/station name from a Transmitter or Receiver HDF5 group.
+
+        Tries several common scalar attribute names used in RST/RSP files.
+        Returns None if no recognisable name attribute is found.
+        """
+        group = fid[f"/Links/{lname}/{terminal}"]
+        for key in ("Name", "name", "Station Name", "station_name",
+                    "Node Name", "node_name", "NodeName", "Station"):
+            if key in group.attrs:
+                raw = group.attrs[key]
+                val = np.atleast_1d(raw)[0]
+                node = cls._to_text(val) if isinstance(val, (bytes, str)) else str(val).strip()
+                if node:
+                    return node
+        return None
 
     def _build_ui(self):
         self.setWindowTitle("End to End Communication Analysis toolkit")
@@ -641,6 +675,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         layout.addWidget(self._build_file_group())
         layout.addWidget(self._build_param_group())
         layout.addWidget(self._build_plot_group())
+        layout.addWidget(self._build_scenario_plot_group())
         layout.addWidget(self._build_run_group())
         layout.addStretch()
 
@@ -684,13 +719,20 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         group = QGroupBox("QAM Parameters")
         form = QFormLayout()
 
+        self.link_combo = QComboBox()
+        self.link_combo.setToolTip("Select link from imported file metadata")
+        self.link_combo.addItem("(no file loaded)", None)
+        self.link_combo.currentTextChanged.connect(self.link_combo.setToolTip)
+
         self.tx_combo = QComboBox()
-        self.tx_combo.setToolTip("Select transmitter antenna from imported file metadata")
-        self.tx_combo.addItem("Tx1", 0)
+        self.tx_combo.setToolTip("Select transmitter antenna element")
+        self.tx_combo.addItem("Tx_1", 0)
+        self.tx_combo.currentTextChanged.connect(self.tx_combo.setToolTip)
 
         self.rx_combo = QComboBox()
-        self.rx_combo.setToolTip("Select receiver antenna from imported file metadata")
-        self.rx_combo.addItem("Rx1", 0)
+        self.rx_combo.setToolTip("Select receiver antenna element")
+        self.rx_combo.addItem("Rx_1", 0)
+        self.rx_combo.currentTextChanged.connect(self.rx_combo.setToolTip)
 
         self.qam_combo = QComboBox()
         self.qam_combo.addItems(["4-QAM", "16-QAM", "64-QAM", "256-QAM", "1024-QAM"])
@@ -786,6 +828,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.taps_spinbox.setSingleStep(50)
 
         # Reordered fields requested by user.
+        form.addRow("Link:", self.link_combo)
         form.addRow("Transmitter Antenna:", self.tx_combo)
         form.addRow("Receiver Antenna:", self.rx_combo)
         form.addRow("Centre Frequency:", self.freq_spinbox)
@@ -815,6 +858,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         )
         form.addRow("", self.bw_est_label)
 
+        self.link_combo.currentIndexChanged.connect(self._on_link_changed)
         self.data_rate_spinbox.valueChanged.connect(self._update_bw_estimate)
         self.snr_spinbox.valueChanged.connect(self._update_bw_estimate)
         self.radio_snr.toggled.connect(self._on_noise_mode_changed)
@@ -850,6 +894,28 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         group.setLayout(vbox)
         return group
 
+    def _build_scenario_plot_group(self):
+        group = QGroupBox("Scenario Plot")
+        vbox = QVBoxLayout()
+
+        self.chk_epoch_avg_ber = QCheckBox("Average BER vs Frame")
+        self.chk_epoch_avg_ber.setChecked(True)
+        self.chk_epoch_avg_ber.setToolTip("Plot cumulative average BER across all simulation frames")
+        vbox.addWidget(self.chk_epoch_avg_ber)
+
+        self.chk_epoch_evm = QCheckBox("EVM (%) vs Frame")
+        self.chk_epoch_evm.setChecked(True)
+        self.chk_epoch_evm.setToolTip("Plot RMS Error Vector Magnitude across all simulation frames")
+        vbox.addWidget(self.chk_epoch_evm)
+
+        self.chk_epoch_snr = QCheckBox("Effective SNR (dB) vs Frame")
+        self.chk_epoch_snr.setChecked(True)
+        self.chk_epoch_snr.setToolTip("Plot measured effective SNR across all simulation frames")
+        vbox.addWidget(self.chk_epoch_snr)
+
+        group.setLayout(vbox)
+        return group
+
     def _on_qam_changed(self):
         qam_map = {"4-QAM": 4, "16-QAM": 16, "64-QAM": 64, "256-QAM": 256, "1024-QAM": 1024}
         qam_order = qam_map.get(self.qam_combo.currentText(), 16)
@@ -866,6 +932,30 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
     def _on_hopping_mode_changed(self):
         self.hopping_freq_edit.setEnabled(self.hopping_enable_chk.isChecked())
+
+    def _on_link_changed(self):
+        """Repopulate Transmitter and Receiver antenna combos for the currently selected link."""
+        lname = self.link_combo.currentText()
+        lm = (self._file_metadata.get("links_metadata") or {}).get(lname)
+        if not lm:
+            return
+        self.freq_spinbox.setValue(lm["fc_GHz"])
+        self.bw_spinbox.setValue(lm["bw_MHz"])
+        self.tx_combo.clear()
+        for i in range(lm["nTx"]):
+            label = f"Tx_{i + 1}"
+            self.tx_combo.addItem(label, i)
+            self.tx_combo.setItemData(self.tx_combo.count() - 1, label, Qt.ToolTipRole)
+        self.tx_combo.setCurrentIndex(0)
+        self.tx_combo.setToolTip(self.tx_combo.currentText())
+        self.rx_combo.clear()
+        for i in range(lm["nRx"]):
+            label = f"Rx_{i + 1}"
+            self.rx_combo.addItem(label, i)
+            self.rx_combo.setItemData(self.rx_combo.count() - 1, label, Qt.ToolTipRole)
+        self.rx_combo.setCurrentIndex(0)
+        self.rx_combo.setToolTip(self.rx_combo.currentText())
+        self._update_bw_estimate()
 
     @staticmethod
     def _parse_hopping_frequencies(freq_text):
@@ -997,6 +1087,28 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         gif_tab.setLayout(gvbox)
         tabs.addTab(gif_tab, "Output Plot Panel")
 
+        epoch_tab = QWidget()
+        epoch_vbox = QVBoxLayout()
+
+        self._epoch_scroll = QScrollArea()
+        self._epoch_scroll.setWidgetResizable(True)
+        self._epoch_content = QWidget()
+        self._epoch_layout = QVBoxLayout()
+        self._epoch_layout.setAlignment(Qt.AlignTop)
+        self._epoch_content.setLayout(self._epoch_layout)
+        self._epoch_scroll.setWidget(self._epoch_content)
+
+        epoch_placeholder = QLabel("Epoch plots will appear here after analysis completes.")
+        epoch_placeholder.setAlignment(Qt.AlignCenter)
+        epoch_placeholder.setStyleSheet(
+            "background-color: #1a1a2e; color: #aaa; font-size: 10pt; border-radius: 6px; padding: 20px;"
+        )
+        self._epoch_layout.addWidget(epoch_placeholder)
+
+        epoch_vbox.addWidget(self._epoch_scroll)
+        epoch_tab.setLayout(epoch_vbox)
+        tabs.addTab(epoch_tab, "Epoch Plots")
+
         self._tabs = tabs
         return tabs
 
@@ -1019,57 +1131,74 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             return
 
         try:
+            links_metadata = {}
             with h5py.File(self._channel_file_path, "r") as fid:
                 links = list(fid["/Links"])
                 if not links:
                     raise ValueError("No links found in file.")
 
-                link = links[0]
-                n_tx = int(fid[f"/Links/{link}/Transmitter"].attrs["Antenna Count"][0])
-                n_rx = int(fid[f"/Links/{link}/Receiver"].attrs["Antenna Count"][0])
-                n_p = int(fid[f"/Links/{link}/Waveform"].attrs["Channel Soundings"][0])
-                n_s = int(fid[f"/Links/{link}/Waveform"].attrs["Sample Count"][0])
-                i_s = float(fid[f"/Links/{link}/Waveform"].attrs["Sounding Interval"][0])
-                bw = float(fid[f"/Links/{link}/Waveform"].attrs["Bandwidth"][0])
-                fc = float(fid[f"/Links/{link}/Waveform"].attrs["Frequency"][0])
-                time_array = fid[f"/Links/{link}/Channel Characterization/Time Array"][:]
-                time_samples = len(time_array[0])
-                tx_names = self._extract_antenna_names(fid, link, "Transmitter", n_tx)
-                rx_names = self._extract_antenna_names(fid, link, "Receiver", n_rx)
+                for lname in links:
+                    n_tx = int(fid[f"/Links/{lname}/Transmitter"].attrs["Antenna Count"][0])
+                    n_rx = int(fid[f"/Links/{lname}/Receiver"].attrs["Antenna Count"][0])
+                    n_p = int(fid[f"/Links/{lname}/Waveform"].attrs["Channel Soundings"][0])
+                    n_s = int(fid[f"/Links/{lname}/Waveform"].attrs["Sample Count"][0])
+                    i_s = float(fid[f"/Links/{lname}/Waveform"].attrs["Sounding Interval"][0])
+                    bw = float(fid[f"/Links/{lname}/Waveform"].attrs["Bandwidth"][0])
+                    fc = float(fid[f"/Links/{lname}/Waveform"].attrs["Frequency"][0])
+                    time_array = fid[f"/Links/{lname}/Channel Characterization/Time Array"][:]
+                    time_samples = len(time_array[0])
+                    tx_names = self._extract_antenna_names(fid, lname, "Transmitter", n_tx)
+                    rx_names = self._extract_antenna_names(fid, lname, "Receiver", n_rx)
 
-            self.freq_spinbox.setValue(fc / 1e9)
-            self.bw_spinbox.setValue(bw / 1e6)
+                    links_metadata[lname] = {
+                        "fc_GHz": fc / 1e9,
+                        "bw_MHz": bw / 1e6,
+                        "nTx": n_tx,
+                        "nRx": n_rx,
+                        "nP": n_p,
+                        "nS": n_s,
+                        "iS_ms": i_s * 1e3,
+                        "Tsamps": time_samples,
+                    }
+
+            first_link = links[0]
+            first_meta = links_metadata[first_link]
 
             self._file_metadata = {
-                "link": link,
-                "fc_GHz": fc / 1e9,
-                "bw_MHz": bw / 1e6,
-                "nTx": n_tx,
-                "nRx": n_rx,
-                "nP": n_p,
-                "nS": n_s,
-                "iS_ms": i_s * 1e3,
-                "Tsamps": time_samples,
-                "tx_names": tx_names,
-                "rx_names": rx_names,
+                "link": first_link,
+                "fc_GHz": first_meta["fc_GHz"],
+                "bw_MHz": first_meta["bw_MHz"],
+                "links": links,
+                "links_metadata": links_metadata,
             }
 
-            self.tx_combo.clear()
-            for idx, name in enumerate(tx_names):
-                self.tx_combo.addItem(name, idx)
-            self.tx_combo.setCurrentIndex(0)
+            # Populate the Link combo; suppress currentIndexChanged during batch population.
+            self.link_combo.blockSignals(True)
+            self.link_combo.clear()
+            for ln in links:
+                self.link_combo.addItem(ln, ln)
+                self.link_combo.setItemData(self.link_combo.count() - 1, ln, Qt.ToolTipRole)
+            self.link_combo.setCurrentIndex(0)
+            self.link_combo.setToolTip(self.link_combo.currentText())
+            _link_popup_w = max(
+                (self.link_combo.fontMetrics().horizontalAdvance(ln) for ln in links),
+                default=0,
+            ) + 40
+            self.link_combo.view().setMinimumWidth(_link_popup_w)
+            self.link_combo.blockSignals(False)
+            # Populate Tx/Rx combos for the first selected link.
+            self._on_link_changed()
 
-            self.rx_combo.clear()
-            for idx, name in enumerate(rx_names):
-                self.rx_combo.addItem(name, idx)
-            self.rx_combo.setCurrentIndex(0)
-
-            info_html = (
-                f"<b>Link:</b> {link}<br>"
-                f"<b>Center Freq:</b> {fc/1e9:.4f} GHz   <b>Bandwidth:</b> {bw/1e6:.2f} MHz<br>"
-                f"<b>Tx:</b> {n_tx}  <b>Rx:</b> {n_rx}  <b>Pulses/frame:</b> {n_p}  <b>Freq pts:</b> {n_s}<br>"
-                f"<b>Sounding interval:</b> {i_s*1e3:.3f} ms   <b>Time frames:</b> {time_samples}"
-            )
+            info_parts = []
+            for lname in links:
+                m = links_metadata[lname]
+                info_parts.append(
+                    f"<b>Link:</b> {lname} &nbsp;|&nbsp; fc={m['fc_GHz']:.4f} GHz"
+                    f" &nbsp;|&nbsp; BW={m['bw_MHz']:.2f} MHz &nbsp;|&nbsp;"
+                    f" Tx={m['nTx']} Rx={m['nRx']} | Pulses={m['nP']} | FreqPts={m['nS']}"
+                    f" | Interval={m['iS_ms']:.3f} ms | Frames={m['Tsamps']}"
+                )
+            info_html = "<br>".join(info_parts)
             self.file_info_label.setText(info_html)
             self.file_info_label.setTextFormat(Qt.RichText)
             self.file_info_label.setStyleSheet(
@@ -1125,12 +1254,12 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         bits_per_symbol = int(math.log2(qam_order))
         data_rate_bps = self.data_rate_spinbox.value() * 1e6
         symbol_rate = data_rate_bps / bits_per_symbol
-        tx_index = self.tx_combo.currentData()
-        rx_index = self.rx_combo.currentData()
-        if tx_index is None:
-            tx_index = self.tx_combo.currentIndex()
-        if rx_index is None:
-            rx_index = self.rx_combo.currentIndex()
+        tx_link = self.link_combo.currentData() if self.link_combo.count() > 0 else None
+        rx_link = tx_link
+        tx_data = self.tx_combo.currentData()
+        rx_data = self.rx_combo.currentData()
+        tx_index = int(tx_data) if tx_data is not None else self.tx_combo.currentIndex()
+        rx_index = int(rx_data) if rx_data is not None else self.rx_combo.currentIndex()
         noise_mode = "snr" if self.radio_snr.isChecked() else "power_noise"
         rx_noise_dbm = -120.0 if noise_mode == "snr" else self.rx_noise_spinbox.value()
         return {
@@ -1145,6 +1274,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             "beta": self.beta_spinbox.value(),
             "span": self.span_spinbox.value(),
             "gif_fps": self.gif_fps_spinbox.value(),
+            "tx_link": tx_link,
+            "rx_link": rx_link,
             "tx_index": int(tx_index),
             "rx_index": int(rx_index),
             "noise_mode": noise_mode,
@@ -1181,8 +1312,23 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.gif_label.setText("Analysis running. GIF will appear here on completion ...")
         self.btn_save_gif.setEnabled(False)
         self._set_gif_controls_enabled(False)
+        self._clear_epoch_plots(running=True)
 
         params = self._collect_params()
+
+        _tx_link = params.get("tx_link")
+        _rx_link = params.get("rx_link")
+        if _tx_link and _rx_link and _tx_link != _rx_link:
+            QMessageBox.warning(
+                self,
+                "Link Mismatch",
+                "Transmitter and Receiver antennas must be from the same link.\n"
+                f"Transmitter link: {_tx_link}\n"
+                f"Receiver link: {_rx_link}\n\n"
+                "Please select antennas from the same link and try again.",
+            )
+            return
+
         hopping_freqs_ghz = []
         if params["hopping_enabled"]:
             try:
@@ -1199,8 +1345,13 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
                 )
                 return
 
-            fc_ghz = float(self._file_metadata.get("fc_GHz", self.freq_spinbox.value()))
-            bw_mhz = float(self._file_metadata.get("bw_MHz", self.bw_spinbox.value()))
+            _lm = (self._file_metadata.get("links_metadata") or {}).get(params.get("tx_link"))
+            if _lm:
+                fc_ghz = float(_lm.get("fc_GHz", self.freq_spinbox.value()))
+                bw_mhz = float(_lm.get("bw_MHz", self.bw_spinbox.value()))
+            else:
+                fc_ghz = float(self._file_metadata.get("fc_GHz", self.freq_spinbox.value()))
+                bw_mhz = float(self._file_metadata.get("bw_MHz", self.bw_spinbox.value()))
             half_bw_ghz = bw_mhz / 2000.0
             fs_hz = float(params["symbol_rate"]) * float(params["samples_per_symbol"])
             sig_half_bw_ghz = (fs_hz / 2.0) / 1e9
@@ -1246,7 +1397,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             ]
 
         self.status_log.append(
-            f"Selected coupling pair: {self.tx_combo.currentText()} - {self.rx_combo.currentText()}"
+            f"Selected link: {self.link_combo.currentText()} | "
+            f"Coupling: {self.tx_combo.currentText()} \u2192 {self.rx_combo.currentText()}"
         )
         self.status_log.append("Selected panels: " + ", ".join(selected_panels))
         if params["noise_mode"] == "snr":
@@ -1266,6 +1418,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.worker.ber_update.connect(self._on_ber)
         self.worker.file_info.connect(self._on_file_info)
         self.worker.gif_ready.connect(self._on_gif_ready)
+        self.worker.epoch_data_ready.connect(self._on_epoch_data_ready)
         self.worker.analysis_complete.connect(self._on_complete)
 
         self.run_button.setEnabled(False)
@@ -1306,15 +1459,10 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             self.ber_label.setStyleSheet("color: red;")
 
     def _on_file_info(self, info):
-        self._file_metadata = dict(info)
+        # Merge run-time link info without overwriting multi-link metadata loaded earlier.
+        self._file_metadata.update(info)
         self.freq_spinbox.setValue(info["fc_GHz"])
         self.bw_spinbox.setValue(info["bw_MHz"])
-        tx_index = int(info.get("tx_index", 0))
-        rx_index = int(info.get("rx_index", 0))
-        if self.tx_combo.count() > 0:
-            self.tx_combo.setCurrentIndex(max(0, min(tx_index, self.tx_combo.count() - 1)))
-        if self.rx_combo.count() > 0:
-            self.rx_combo.setCurrentIndex(max(0, min(rx_index, self.rx_combo.count() - 1)))
 
         txt = (
             f"Link: {info['link']} | fc={info['fc_GHz']:.3f} GHz | BW={info['bw_MHz']:.1f} MHz | "
@@ -1461,12 +1609,124 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             shutil.copy2(self._gif_path, dest)
             QMessageBox.information(self, "Saved", f"GIF saved to:\n{dest}")
 
+    def _clear_epoch_plots(self, running=False):
+        while self._epoch_layout.count():
+            item = self._epoch_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        msg = (
+            "Analysis running. Epoch plots will appear here after completion."
+            if running
+            else "Epoch plots will appear here after analysis completes."
+        )
+        placeholder = QLabel(msg)
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setStyleSheet(
+            "background-color: #1a1a2e; color: #aaa; font-size: 10pt; border-radius: 6px; padding: 20px;"
+        )
+        self._epoch_layout.addWidget(placeholder)
+
+    def _on_epoch_data_ready(self, data):
+        while self._epoch_layout.count():
+            item = self._epoch_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        frames = data.get("frames", [])
+        if not frames:
+            lbl = QLabel("No epoch data was collected.")
+            lbl.setAlignment(Qt.AlignCenter)
+            self._epoch_layout.addWidget(lbl)
+            return
+
+        plots_to_render = []
+        if self.chk_epoch_avg_ber.isChecked():
+            plots_to_render.append((
+                "Average BER vs Frame",
+                "Frame", "Average BER",
+                data["avg_ber"], True,
+            ))
+        if self.chk_epoch_evm.isChecked():
+            plots_to_render.append((
+                "EVM (%) vs Frame",
+                "Frame", "EVM (%)",
+                data["evm_pct"], False,
+            ))
+        if self.chk_epoch_snr.isChecked():
+            plots_to_render.append((
+                "Effective SNR (dB) vs Frame",
+                "Frame", "Effective SNR (dB)",
+                data["eff_snr_db"], False,
+            ))
+
+        if not plots_to_render:
+            lbl = QLabel("No Scenario Plot items selected. Enable items in the Scenario Plot section and re-run.")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color: #555; font-size: 9pt; padding: 10px;")
+            self._epoch_layout.addWidget(lbl)
+            return
+
+        qam_order = data.get("qam_order", "?")
+        _filename_map = {
+            "Average BER vs Frame": f"epoch_avg_ber_{qam_order}qam.gif",
+            "EVM (%) vs Frame": f"epoch_evm_pct_{qam_order}qam.gif",
+            "Effective SNR (dB) vs Frame": f"epoch_eff_snr_db_{qam_order}qam.gif",
+        }
+        for (title, xlabel, ylabel, values, use_log_y) in plots_to_render:
+            pixmap, pil_img = self._render_epoch_plot(
+                frames, values, title, xlabel, ylabel, use_log_y, qam_order
+            )
+            lbl = QLabel()
+            lbl.setPixmap(pixmap)
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet("margin: 4px;")
+            self._epoch_layout.addWidget(lbl)
+            fname = _filename_map.get(
+                title,
+                "epoch_" + re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_") + f"_{qam_order}qam.gif",
+            )
+            save_path = str(OUTPUT_DIR / fname)
+            try:
+                pil_img.convert("RGB").save(save_path, format="GIF")
+                self.status_log.append(f"Epoch plot saved: {save_path}")
+            except Exception as exc:
+                self.status_log.append(f"Warning: could not save epoch plot '{title}': {exc}")
+
+        if hasattr(self, "_tabs"):
+            self._tabs.setCurrentIndex(1)
+
+    def _render_epoch_plot(self, frames, values, title, xlabel, ylabel, use_log_y, qam_order):
+        """Render a single epoch plot. Returns (QPixmap, PIL.Image) for display and GIF export."""
+        fig, ax = plt.subplots(figsize=(9, 3.8), tight_layout=True)
+        ax.plot(frames, values, linewidth=1.5, color="#1976d2", marker=".", markersize=3)
+        ax.set_title(f"{title} — {qam_order}-QAM", fontsize=11)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        if use_log_y and values and all(v > 0 for v in values):
+            ax.set_yscale("log")
+        ax.grid(True, alpha=0.4)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100)
+        buf.seek(0)
+        plt.close(fig)
+        img = Image.open(buf).convert("RGBA")
+        pil_img = img.copy()
+        qimage = QImage(
+            img.tobytes("raw", "RGBA"),
+            img.width,
+            img.height,
+            img.width * 4,
+            QImage.Format_RGBA8888,
+        ).copy()
+        return QPixmap.fromImage(qimage), pil_img
+
     def _on_complete(self, success):
         self.run_button.setEnabled(True)
         self.stop_button.setEnabled(False)
 
         if success:
-            self.status_log.append("\nAnalysis complete. GIF is ready in the Output Plot Panel tab.")
+            self.status_log.append("\nAnalysis complete. GIF is ready in the Output Plot Panel tab. Epoch plots are in the Epoch Plots tab.")
         else:
             self.status_log.append("\nAnalysis failed. See log above.")
             QMessageBox.critical(self, "Error", "Processing failed. Check the log for details.")
