@@ -101,7 +101,7 @@
 
     <div class="card">
       <h2>3) RST / RSP File Format (Channel Import)</h2>
-      <p>The toolkit expects HDF5-based channel files with a <code>/Links</code> hierarchy. The first link is used by default.</p>
+      <p>The toolkit expects HDF5-based channel files with a <code>/Links</code> hierarchy. After clicking <b>Load Metadata</b>, all available links are discovered and populated into the <b>Link</b> dropdown. The user can then select any link, and the Transmitter and Receiver antenna dropdowns are automatically updated to reflect the antenna count within that link.</p>
       <ul>
         <li><code>/Links/&lt;Link&gt;/Transmitter</code> - Tx antenna metadata</li>
         <li><code>/Links/&lt;Link&gt;/Receiver</code> - Rx antenna metadata</li>
@@ -137,7 +137,9 @@
           <tr><td>RRC Beta</td><td>Roll-off factor of root-raised cosine pulse shaping.</td><td>Lower beta improves spectral compactness but increases time-domain ringing/sensitivity; higher beta relaxes filtering at cost of occupied bandwidth.</td></tr>
           <tr><td>RRC Span</td><td>RRC filter duration in symbols.</td><td>Longer span better approximates ideal pulse but adds latency and computational burden.</td></tr>
           <tr><td>GIF FPS</td><td>Playback frame rate for exported animation.</td><td>Visualization-only parameter; does not affect DSP results.</td></tr>
-          <tr><td>Transmitter / Receiver Antenna</td><td>Selects coupling pair in imported multi-antenna dataset.</td><td>Chooses a specific channel transfer function; BER/SNR/EVM may differ strongly between pairs.</td></tr>
+          <tr><td>Link</td><td>Selects which link from the imported RST/RSP file to analyse.</td><td>Populated after <b>Load Metadata</b> is pressed. Choosing a different link automatically updates the centre frequency, bandwidth, and the Transmitter / Receiver antenna lists to match that link's dataset.</td></tr>
+          <tr><td>Transmitter Antenna</td><td>Selects the transmitter antenna element within the active link.</td><td>Index maps to the first dimension of the channel response tensor. Each Tx–Rx pair yields a unique H(f) path; BER/SNR/EVM can differ significantly between elements.</td></tr>
+          <tr><td>Receiver Antenna</td><td>Selects the receiver antenna element within the active link.</td><td>Index maps to the second dimension of the channel response tensor. Combine with the Transmitter Antenna selection to isolate any specific coupling channel in a MIMO dataset.</td></tr>
           <tr><td>Plot Panels</td><td>Panel-selection checkboxes for output figure.</td><td>Allows targeted diagnostics (e.g., only constellation + RX spectrum) without changing signal processing core.</td></tr>
         </tbody>
       </table>
@@ -155,6 +157,24 @@
       </ul>
       <div class="note">
         <b>Important:</b> RX RF spectrum axis limits remain locked to the imported RSP center frequency and bandwidth, so frame-to-frame comparisons stay consistent.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>4.2) Scenario Plot (Epoch Data)</h2>
+      <p>The <b>Scenario Plot</b> section contains three optional checkboxes that control which epoch-level trend plots are generated after analysis completes. These plots are rendered in the <b>Epoch Plots</b> tab and are also saved individually as GIF files in the <code>output/</code> folder.</p>
+      <table>
+        <thead>
+          <tr><th>Checkbox</th><th>What It Plots</th><th>Y-Axis Scale</th><th>Saved Filename Pattern</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Average BER vs Frame</td><td>Cumulative running-average bit-error ratio across all processed frames. Provides a stable convergence indicator as more frames are processed.</td><td>Logarithmic (log10)</td><td><code>epoch_avg_ber_&lt;M&gt;qam.gif</code></td></tr>
+          <tr><td>EVM (%) vs Frame</td><td>Per-frame RMS Error Vector Magnitude expressed as a percentage. Tracks how symbol quality varies over time as the channel evolves.</td><td>Linear</td><td><code>epoch_evm_pct_&lt;M&gt;qam.gif</code></td></tr>
+          <tr><td>Effective SNR (dB) vs Frame</td><td>Per-frame symbol-domain effective SNR derived from the gain-aligned error vector power. Shows how channel conditions translate to experienced SNR over time.</td><td>Linear</td><td><code>epoch_eff_snr_db_&lt;M&gt;qam.gif</code></td></tr>
+        </tbody>
+      </table>
+      <div class="note">
+        <b>Note:</b> If no Scenario Plot items are checked, the Epoch Plots tab will display an advisory message and no epoch plots will be saved. At least one item must be checked to generate epoch output.
       </div>
     </div>
 
@@ -212,6 +232,36 @@
       <div class="note">
         <b>Reading plots together:</b> a selective channel (freq notches + long delay spread) generally causes broader constellation clusters, higher EVM, and higher BER unless SNR/equalization margin is sufficient.
       </div>
+    </div>
+
+    <div class="card">
+      <h2>8) Epoch Plot Details and Interpretation</h2>
+      <p>Epoch plots appear in the <b>Epoch Plots</b> tab after analysis finishes. Each plot shows a single metric on the Y-axis against the simulation frame number on the X-axis, covering all frames in the imported channel file.</p>
+      <table>
+        <thead>
+          <tr><th>Plot</th><th>What It Represents</th><th>Units / Axes</th><th>How to Interpret</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Average BER vs Frame</td>
+            <td>Cumulative running average of bit-error ratio starting from frame 1. Each point is the mean of all BER values up to and including that frame.</td>
+            <td>X: Frame index, Y: Average BER (log scale).</td>
+            <td>A steadily decreasing or converging curve indicates stable channel conditions. Persistent plateaus or rising trends signal that challenging channel frames are consistently degrading link quality.</td>
+          </tr>
+          <tr>
+            <td>EVM (%) vs Frame</td>
+            <td>Per-frame root-mean-square error vector magnitude as a percentage of the mean signal power.</td>
+            <td>X: Frame index, Y: EVM (%).</td>
+            <td>Low, stable EVM indicates robust symbol recovery. Spikes correspond to frames with deep fading or strong multipath. Correlate with the Channel Freq vs Power plot of the same frame to identify frequency-selective causes.</td>
+          </tr>
+          <tr>
+            <td>Effective SNR (dB) vs Frame</td>
+            <td>Per-frame symbol-domain SNR computed from gain-aligned error vector power: 10·log10(P_signal / P_error).</td>
+            <td>X: Frame index, Y: Effective SNR (dB).</td>
+            <td>Higher values indicate better equalization and lower symbol error rate. Troughs align with difficult channel frames. Compare with Peak SNR to assess how much equalization margin the system recovers.</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </body>
