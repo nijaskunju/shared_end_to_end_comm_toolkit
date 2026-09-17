@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MIMO Communication Analysis Toolkit - Help</title>
+  <style>
+    :root {
+      --bg: #f7f9fc;
+      --fg: #1f2937;
+      --muted: #4b5563;
+      --card: #ffffff;
+      --accent: #0b5cab;
+      --border: #d1d5db;
+    }
+    body {
+      margin: 0;
+      font-family: Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.5;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h1, h2, h3 { color: #111827; }
+    h1 { margin-top: 0; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .muted { color: var(--muted); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      text-align: left;
+      padding: 8px;
+      vertical-align: top;
+    }
+    th { background: #eef2ff; }
+    code {
+      background: #eef2f7;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .note {
+      background: #ecfeff;
+      border-left: 4px solid var(--accent);
+      padding: 10px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MIMO Communication Analysis Toolkit - Help</h1>
+    <p class="muted">This document explains the toolkit architecture, MIMO channel model, the method used to compute MIMO OFDM channel capacity, the meaning of each user input, and how to interpret every output plot and file.</p>
+
+    <div class="card">
+      <h2>1) Toolkit Architecture</h2>
+      <ul>
+        <li><b>Input Channel Model:</b> The toolkit imports a frequency-domain S-parameter sweep from an RST/RSP (HDF5) file. Each stored coefficient is the complex port-to-port transmission response from one transmit antenna element to one receive antenna element, over a swept frequency band, for one or more channel soundings, across a scenario time history.</li>
+        <li><b>Antenna Usage:</b> Every transmit antenna and every receive antenna reported for the selected link is used. There is no per-antenna selection; the full MIMO array is analyzed as a single spatial channel matrix.</li>
+        <li><b>OFDM Waveform Assumption:</b> The link is analyzed as an OFDM waveform using a user-selected 3GPP subcarrier spacing (SCS) and resource-block count. The imported frequency sweep is interpolated onto the exact OFDM subcarrier center frequencies.</li>
+        <li><b>Capacity Engine:</b> For every OFDM subcarrier, the complex channel matrix is assembled and its equal-power Shannon capacity is computed. Subcarrier capacities are summed across the occupied bandwidth to produce total capacity for that time sample.</li>
+        <li><b>Time and Sounding History:</b> Every scenario frame and every channel sounding within that frame is treated as a distinct, chronologically ordered time sample (frame-major, sounding-minor), so capacity is reported as a full time history rather than a single value.</li>
+        <li><b>Streaming for Large Files:</b> The HDF5 response dataset is read one sounding and one antenna-port path at a time and interpolated immediately onto the OFDM grid. The full response array is never loaded into memory, which allows multi-gigabyte channel files to be processed safely.</li>
+        <li><b>Optional GPU Acceleration:</b> When <b>Use GPU</b> is selected, the same batched linear-algebra operations run on a local NVIDIA GPU through CuPy instead of NumPy.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>2) What Is MIMO?</h2>
+      <p>MIMO (Multiple-Input, Multiple-Output) refers to a radio link that uses multiple antenna elements at both the transmitter and the receiver. Instead of a single scalar channel gain between one Tx and one Rx antenna, the link is described by a complex channel <b>matrix</b> that captures every antenna-to-antenna coupling simultaneously:</p>
+      <p style="text-align:center;">
+        <code>H(f) &isin; &Copf;<sup>N<sub>r</sub> &times; N<sub>t</sub></sup></code>,
+        &nbsp; where <code>N<sub>t</sub></code> is the number of transmit antenna ports and <code>N<sub>r</sub></code> is the number of receive antenna ports.
+      </p>
+      <p>Each entry <code>H<sub>i,j</sub>(f)</code> is the complex transmission coefficient from transmit port <code>j</code> to receive port <code>i</code> at frequency <code>f</code>, exactly as reported by the imported S-parameter sweep. When the propagation environment provides enough multipath richness and angular diversity, this matrix supports multiple independent spatial data streams at the same time, on the same frequency and time resource &mdash; this is <b>spatial multiplexing</b>, the core benefit of MIMO.</p>
+      <p>How much benefit is available depends on the channel's spatial structure: a channel dominated by a single strong path (for example, pure line-of-sight with little scattering) behaves close to rank-1 and offers little multiplexing gain, while a rich multipath channel (common in complex urban and indoor environments, including many non-line-of-sight conditions) can offer multiple usable spatial modes.</p>
+    </div>
+
+    <div class="card">
+      <h2>3) Method Used to Compute MIMO OFDM Channel Capacity</h2>
+      <ol>
+        <li><b>Channel matrix per subcarrier:</b> For every active OFDM subcarrier frequency, the imported frequency sweep is linearly interpolated (independently for the real and imaginary parts) onto that exact subcarrier frequency, for every Tx&ndash;Rx antenna pair, producing <code>H<sub>k</sub></code> for subcarrier <code>k</code>.</li>
+        <li><b>Equal-power allocation:</b> The user-specified total transmit power is divided equally across every active subcarrier and, on each subcarrier, equally across every transmit antenna port. This mirrors a realistic scheduler baseline rather than an idealized water-filling allocation.</li>
+        <li><b>Per-subcarrier capacity:</b> Using the Shannon/Telatar MIMO capacity expression,
+          <p style="text-align:center;">
+            <code>C<sub>k</sub> = log<sub>2</sub> det( I + &gamma;<sub>k</sub> H<sub>k</sub> H<sub>k</sub><sup>H</sup> )</code> &nbsp;(bits/s/Hz)
+          </p>
+          where <code>&gamma;<sub>k</sub></code> combines the per-port transmit power, the number of transmit ports, and the thermal noise power (from noise density and noise figure) on that subcarrier. The determinant is evaluated with a numerically stable log-determinant (slogdet) rather than an explicit eigenvalue product.
+        </li>
+        <li><b>Total capacity for one time sample:</b>
+          <p style="text-align:center;">
+            <code>C = &Delta;f &sum;<sub>k</sub> C<sub>k</sub></code> &nbsp;(bits/s)
+          </p>
+          where <code>&Delta;f</code> is the selected subcarrier spacing and the sum runs over every active subcarrier in the configured resource-block allocation.
+        </li>
+        <li><b>Batched, memory-bounded evaluation:</b> Subcarriers are processed in fixed-size batches so that only a small Gram matrix set is held in memory at any time, using whichever of <code>H H<sup>H</sup></code> or <code>H<sup>H</sup> H</code> is smaller (an 8&times;32 uplink, for example, always forms the 8&times;8 Gram matrix rather than 32&times;32).</li>
+        <li><b>Spatial diagnostics per subcarrier:</b> The eigenvalues of the smaller Gram matrix are also used to compute the effective rank, condition number, and dominant eigenvalue fraction described in Section 5, and these are averaged across all active subcarriers for that time sample.</li>
+        <li><b>Repeat over time:</b> Steps 1&ndash;6 are repeated for every scenario frame and every channel sounding inside that frame, in chronological order, to build the full capacity and spatial-diagnostic time history.</li>
+      </ol>
+      <div class="note">
+        <b>Note:</b> Because the imported S-parameters are treated as already including antenna gain and coupling effects from the input port of each transmit antenna to the output port of each receive antenna, no separate antenna-pattern or path-loss correction is applied. Capacity is computed directly at the RF reference ports represented in the imported file.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>4) RST / RSP File Format (Channel Import)</h2>
+      <p>The toolkit expects HDF5-based channel files with a <code>/Links</code> hierarchy, the same format used by the End to End Communication Analysis toolkit. After clicking <b>Load Metadata</b>, every link in the file is discovered and its Tx/Rx antenna counts, sounding count, sample count, sounding interval, bandwidth, and center frequency are displayed.</p>
+      <ul>
+        <li><code>/Links/&lt;Link&gt;/Transmitter</code> - Tx antenna metadata (antenna count and, when available, antenna names)</li>
+        <li><code>/Links/&lt;Link&gt;/Receiver</code> - Rx antenna metadata (antenna count and, when available, antenna names)</li>
+        <li><code>/Links/&lt;Link&gt;/Waveform</code> - bandwidth, center frequency, sample count, channel sounding count, sounding interval</li>
+        <li><code>/Links/&lt;Link&gt;/Channel Characterization/Response</code> - frequency response for every Tx-Rx-sounding combination (real/imaginary interleaved)</li>
+        <li><code>/Links/&lt;Link&gt;/Channel Characterization/Time Array</code> - frame time axis</li>
+      </ul>
+      <div class="note">
+        <b>Frame and sounding ordering:</b> Each scenario frame may contain multiple channel soundings, taken at contiguous time steps within that frame. The toolkit processes every sounding of every frame, in order, and assigns each one a timestamp equal to the frame time plus <code>sounding_index &times; Sounding Interval</code>.
+      </div>
+      <div class="note">
+        <b>Large files:</b> The full response dataset is never loaded into memory at once. If the file cannot be opened at all and the error mentions a truncated file or a stored end-of-file mismatch, the file itself is incomplete (for example, the simulation ran out of disk space while writing) and must be regenerated; this is not a toolkit memory limitation.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>5) User Inputs - Technical Meaning and Theory</h2>
+      <table>
+        <thead>
+          <tr><th>Input</th><th>Technical Meaning</th><th>Theory / Practical Impact</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Link</td><td>Selects which link from the imported RST/RSP file to analyze.</td><td>Populated after <b>Load Metadata</b>. Every transmit and receive antenna reported for the selected link is used automatically; no per-antenna coupling is chosen.</td></tr>
+          <tr><td>Subcarrier Spacing (SCS)</td><td>OFDM subcarrier frequency spacing, offered at the standard 3GPP NR values (15, 30, 60, 120, 240, 480, and 960 kHz).</td><td>Sets <code>&Delta;f</code> in the capacity summation. For a fixed occupied bandwidth and fixed transmit power spectral density, ideal Shannon capacity is largely insensitive to SCS; SCS mainly changes how many subcarriers span the same bandwidth and how finely the frequency-selective channel is sampled.</td></tr>
+          <tr><td>Resource Blocks</td><td>Number of 3GPP NR resource blocks used. Each resource block contains 12 subcarriers.</td><td>Together with SCS this sets the occupied OFDM bandwidth (<code>12 &times; Resource Blocks &times; SCS</code>), which must not exceed the bandwidth of the imported channel file.</td></tr>
+          <tr><td>Total Tx Power</td><td>Total radiated power across the entire transmit array, in dBm.</td><td>Divided equally across every active subcarrier and, on each subcarrier, equally across every transmit antenna port. Higher power raises the per-subcarrier SNR and therefore capacity, with diminishing (logarithmic) returns.</td></tr>
+          <tr><td>Thermal Noise Density</td><td>Receiver noise power spectral density in dBm/Hz (a value near -174 dBm/Hz corresponds to standard room-temperature thermal noise).</td><td>Combined with subcarrier spacing and noise figure to obtain the thermal noise power on each subcarrier at each receive port.</td></tr>
+          <tr><td>Receiver Noise Figure</td><td>Additional receiver noise contribution, in dB, on top of the thermal noise floor.</td><td>Higher noise figure directly reduces per-subcarrier SNR and therefore reduces capacity; it does not change the channel's spatial structure (rank, condition number, dominant eigenvalue fraction).</td></tr>
+          <tr><td>Acceleration (Use CPU / Use GPU)</td><td>Selects whether batched matrix operations run on the CPU with NumPy or on a local NVIDIA GPU with CuPy.</td><td>Both paths compute the identical mathematical result. GPU mode requires the CuPy package matching the installed CUDA version and a CUDA-capable GPU; it is most beneficial for large antenna counts, wide bandwidths, or long scenario time histories.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>6) Capacity Summary (Status and KPI Tab)</h2>
+      <ul>
+        <li><b>Mean Capacity:</b> Average of the total OFDM capacity (<code>C(t)</code>, converted to Gbps) across every processed time sample in the scenario.</li>
+        <li><b>Peak Capacity:</b> The single highest instantaneous capacity observed across the scenario time history, typically corresponding to a time sample with strong, well-conditioned multipath coupling.</li>
+        <li><b>Mean Spectral Efficiency:</b> Average, across time, of the per-subcarrier spectral efficiency (bits/s/Hz per subcarrier) averaged over the OFDM band. Multiplying this by the occupied bandwidth reproduces the total capacity.</li>
+        <li><b>Mean Effective Rank:</b> Average, across time, of the entropy-based effective rank described in Section 7. This indicates how many spatial modes are typically usable, not merely how many are mathematically nonzero.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>7) Output Plots and Files (Capacity Time History Tab)</h2>
+      <p>After analysis completes, four time-history plots are displayed together and are also saved individually as PNG files in the local <code>output/</code> folder, named <code>mimo_&lt;metric&gt;_&lt;link&gt;.png</code>. A companion CSV file, <code>mimo_capacity_&lt;link&gt;.csv</code>, records every time sample with its frame index, sounding index, and all metrics below.</p>
+      <table>
+        <thead>
+          <tr><th>Plot / Column</th><th>What It Represents</th><th>How to Interpret</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Capacity (<code>capacity_bps</code>)</td>
+            <td>Total instantaneous OFDM channel capacity at that time sample, computed as described in Section 3.</td>
+            <td>Higher values indicate a stronger, better-conditioned MIMO channel at the configured Tx power, noise figure, and OFDM bandwidth. Drops often align with reduced dominant eigenvalue fraction or lower effective rank, but can also simply reflect lower received signal power.</td>
+          </tr>
+          <tr>
+            <td>Effective Rank (<code>effective_rank</code>)</td>
+            <td>Entropy-based spatial rank,
+              <code>r<sub>eff</sub> = exp( -&sum;<sub>i</sub> p<sub>i</sub> ln p<sub>i</sub> )</code>,
+              where <code>p<sub>i</sub> = &lambda;<sub>i</sub> / &sum;<sub>j</sub> &lambda;<sub>j</sub></code> are the normalized eigenvalues of the channel Gram matrix, averaged over all active subcarriers.
+            </td>
+            <td>This measures how evenly the channel's spatial energy is distributed among independent modes, not merely how many singular values are nonzero. A value near the maximum possible (<code>min(N<sub>t</sub>, N<sub>r</sub>)</code>) means spatial energy is spread across many equally strong modes; a value near 1 means one mode dominates. It is scale-invariant: several equally weak modes can still report a high effective rank even when absolute capacity is low, so effective rank should be read together with the capacity plot, not in isolation.</td>
+          </tr>
+          <tr>
+            <td>Condition Number (<code>condition_number</code>)</td>
+            <td>Ratio of the largest to the smallest singular value of the channel matrix (via the square root of the largest-to-smallest Gram-matrix eigenvalue ratio), averaged over all active subcarriers.</td>
+            <td>A condition number near 1 indicates a well-balanced, orthogonal-like channel that is favorable for spatial multiplexing. A large condition number indicates that one or more spatial modes are much weaker than the strongest mode, which limits achievable multiplexing gain even if the channel is not fully rank-deficient. This plot uses a logarithmic y-axis when all values are positive because condition number can span several orders of magnitude.</td>
+          </tr>
+          <tr>
+            <td>Dominant Eigenvalue Fraction (<code>dominant_eigenvalue_fraction</code>)</td>
+            <td><code>p<sub>max</sub> = &lambda;<sub>max</sub> / &sum;<sub>i</sub> &lambda;<sub>i</sub></code>, the fraction of total channel energy carried by the single strongest spatial eigenmode, averaged over all active subcarriers.</td>
+            <td>Values close to 1 mean the link is effectively behaving like a single dominant path (for example, a strong line-of-sight or a single strong specular reflection), so most capacity gain would need to come from a higher-order modulation or more power rather than spatial multiplexing. Lower values indicate that channel energy is shared among multiple modes, which is favorable for MIMO spatial multiplexing.</td>
+          </tr>
+          <tr>
+            <td><code>time_s</code>, <code>frame_index</code>, <code>sounding_index</code></td>
+            <td>The chronological timestamp of the sample, and the originating scenario frame and channel sounding within that frame.</td>
+            <td>Use these to correlate a capacity dip or rank change with a specific point in the movement scenario, or to re-inspect the corresponding channel frequency/delay behavior in the End to End Communication Analysis toolkit.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="note">
+        <b>Non-line-of-sight behavior:</b> A blocked or non-line-of-sight time sample does not automatically produce a low effective rank. Rich multipath from reflection and diffraction can create several spatial modes of comparable strength, sometimes yielding higher effective rank than a strong single-path line-of-sight condition &mdash; while typically also producing lower absolute capacity due to reduced received power. Always review capacity, effective rank, condition number, and dominant eigenvalue fraction together for a complete picture of channel behavior at any given time sample.
+      </div>
+    </div>
+  </div>
+</body>
+</html>
