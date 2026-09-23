@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import upfirdn, firwin, lfilter
+from scipy.signal import upfirdn, firwin, lfilter, correlate
 import os
 from pathlib import Path
 from scipy.signal import firwin, freqz
@@ -110,16 +110,25 @@ class QAMEndToEndSystem:
         """
         bps = self.bits_per_symbol
         bpd = self.bits_per_dim
+        bits = np.asarray(bits, dtype=np.int64)
         num_sym = len(bits) // bps
-        bit_groups = np.asarray(bits[:num_sym * bps], dtype=int).reshape((num_sym, bps))
-        symbols = np.zeros(num_sym, dtype=complex)
-        for i, group in enumerate(bit_groups):
-            r_int = int(''.join(map(str, group[:bpd])), 2)
-            q_int = int(''.join(map(str, group[bpd:])), 2)
-            r_idx = self._gray_decode(r_int)
-            q_idx = self._gray_decode(q_int)
-            symbols[i] = (self.pam_levels[r_idx] + 1j * self.pam_levels[q_idx]) / self.norm_factor
-        return symbols
+        bit_groups = bits[:num_sym * bps].reshape((num_sym, bps))
+        weights = 1 << np.arange(bpd - 1, -1, -1, dtype=np.int64)
+        r_int = bit_groups[:, :bpd] @ weights
+        q_int = bit_groups[:, bpd:] @ weights
+        r_idx = self._gray_decode_array(r_int)
+        q_idx = self._gray_decode_array(q_int)
+        return (self.pam_levels[r_idx] + 1j * self.pam_levels[q_idx]) / self.norm_factor
+
+    @staticmethod
+    def _gray_decode_array(g):
+        """Vectorized Gray-to-binary decode (same recurrence as _gray_decode)."""
+        n = g.copy()
+        mask = g >> 1
+        while np.any(mask):
+            n ^= mask
+            mask >>= 1
+        return n
 
     def add_awgn(self, signal, snr_dB):
         snr_linear = 10**(snr_dB / 10)
@@ -138,18 +147,17 @@ class QAMEndToEndSystem:
         """
         bpd = self.bits_per_dim
         levels = self.pam_levels
-        bits = []
-        for s in symbols:
-            r_val = np.real(s) * self.norm_factor
-            q_val = np.imag(s) * self.norm_factor
-            r_idx = int(np.argmin(np.abs(levels - r_val)))
-            q_idx = int(np.argmin(np.abs(levels - q_val)))
-            r_gray = self._gray_encode(r_idx)
-            q_gray = self._gray_encode(q_idx)
-            r_bits = [(r_gray >> (bpd - 1 - j)) & 1 for j in range(bpd)]
-            q_bits = [(q_gray >> (bpd - 1 - j)) & 1 for j in range(bpd)]
-            bits.extend(r_bits + q_bits)
-        return np.array(bits, dtype=int)
+        symbols = np.asarray(symbols)
+        r_val = np.real(symbols) * self.norm_factor
+        q_val = np.imag(symbols) * self.norm_factor
+        r_idx = np.argmin(np.abs(levels[None, :] - r_val[:, None]), axis=1)
+        q_idx = np.argmin(np.abs(levels[None, :] - q_val[:, None]), axis=1)
+        r_gray = r_idx ^ (r_idx >> 1)
+        q_gray = q_idx ^ (q_idx >> 1)
+        shifts = np.arange(bpd - 1, -1, -1)
+        r_bits = (r_gray[:, None] >> shifts[None, :]) & 1
+        q_bits = (q_gray[:, None] >> shifts[None, :]) & 1
+        return np.concatenate([r_bits, q_bits], axis=1).reshape(-1).astype(int)
 
     def estimate_channel_time_domain(self, tx_ref, rx_ref, L):
         N = len(tx_ref)
@@ -256,7 +264,8 @@ class QAMEndToEndSystem:
         return x_hat[:N]
 
     def cross_correlation(self, x, y, mode='full', normalize=True):
-        corr = np.correlate(x, y, mode=mode)
+        # FFT-based correlation (O(N log N)) instead of np.correlate's direct O(N*M) method.
+        corr = correlate(x, y, mode=mode, method='fft')
         if normalize:
             corr = corr / (np.linalg.norm(x) * np.linalg.norm(y))
         len_x = len(x)
