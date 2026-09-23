@@ -20,7 +20,7 @@ import matplotlib
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont, QImage, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QTextEdit,
@@ -48,9 +49,103 @@ from PySide6.QtWidgets import (
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+plt.style.use("dark_background")
+
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+DARK_STYLESHEET = """
+QToolTip {
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+    border: 1px solid #3a3a3a;
+}
+QGroupBox {
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    color: #e0e0e0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+    color: #90caf9;
+}
+QTabWidget::pane {
+    border: 1px solid #3a3a3a;
+}
+QTabBar::tab {
+    background: #2b2b2b;
+    color: #cfd8dc;
+    padding: 6px 12px;
+    border: 1px solid #3a3a3a;
+    border-bottom: none;
+}
+QTabBar::tab:selected {
+    background: #1e1e1e;
+    color: #ffffff;
+}
+QScrollArea {
+    border: none;
+}
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 2px;
+}
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+    color: #777777;
+    background-color: #232323;
+}
+QComboBox QAbstractItemView {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    selection-background-color: #264f78;
+}
+QProgressBar {
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    text-align: center;
+    color: #e0e0e0;
+    background-color: #1e1e1e;
+}
+QProgressBar::chunk {
+    background-color: #1976d2;
+}
+QPushButton:disabled {
+    background-color: #3a3a3a;
+    color: #808080;
+}
+"""
+
+
+def _apply_dark_theme(app):
+    """Apply a dark Fusion palette and stylesheet to the whole application."""
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor(30, 30, 30))
+    palette.setColor(QPalette.WindowText, QColor(224, 224, 224))
+    palette.setColor(QPalette.Base, QColor(24, 24, 24))
+    palette.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
+    palette.setColor(QPalette.ToolTipBase, QColor(224, 224, 224))
+    palette.setColor(QPalette.ToolTipText, QColor(224, 224, 224))
+    palette.setColor(QPalette.Text, QColor(224, 224, 224))
+    palette.setColor(QPalette.Button, QColor(45, 45, 45))
+    palette.setColor(QPalette.ButtonText, QColor(224, 224, 224))
+    palette.setColor(QPalette.BrightText, QColor(255, 82, 82))
+    palette.setColor(QPalette.Link, QColor(66, 165, 245))
+    palette.setColor(QPalette.Highlight, QColor(38, 79, 120))
+    palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+    palette.setColor(QPalette.Disabled, QPalette.Text, QColor(120, 120, 120))
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor(120, 120, 120))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(120, 120, 120))
+    app.setPalette(palette)
+    app.setStyleSheet(DARK_STYLESHEET)
 
 
 def _read_interpolated_sounding(
@@ -436,7 +531,7 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
                 self.top_logo_label.setPixmap(pixmap.scaledToWidth(100, Qt.SmoothTransformation))
             except Exception as exc:
                 self.top_logo_label.setText(f"Logo load failed: {exc}")
-                self.top_logo_label.setStyleSheet("color: #b71c1c;")
+                self.top_logo_label.setStyleSheet("color: #ff6659;")
         top_row.addWidget(self.top_logo_label, 0, Qt.AlignRight | Qt.AlignTop)
         root_layout.addLayout(top_row)
 
@@ -504,7 +599,7 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         self.file_info_label = QLabel("")
         self.file_info_label.setWordWrap(True)
         self.file_info_label.setStyleSheet(
-            "color: #333; font-size: 8pt; background-color: #f0f4ff;"
+            "color: #cfd8dc; font-size: 8pt; background-color: #1c2733;"
             "border-radius: 4px; padding: 4px;"
         )
         layout.addWidget(self.file_info_label)
@@ -563,8 +658,8 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         self.ofdm_summary_label = QLabel()
         self.ofdm_summary_label.setWordWrap(True)
         self.ofdm_summary_label.setStyleSheet(
-            "background-color: #e3f2fd; color: #0d47a1; font-size: 8pt;"
-            "border-radius: 4px; padding: 5px; border: 1px solid #90caf9;"
+            "background-color: #10283a; color: #82b1ff; font-size: 8pt;"
+            "border-radius: 4px; padding: 5px; border: 1px solid #2f6fa5;"
         )
 
         form.addRow("Link:", self.link_combo)
@@ -614,7 +709,10 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         status_layout.addWidget(self.progress_bar)
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
-        self.status_log.setStyleSheet("background-color: #f5f5f5; font-family: monospace;")
+        self.status_log.setStyleSheet(
+            "background-color: #1a1a1a; color: #d4d4d4; font-family: monospace;"
+            "border: 1px solid #3a3a3a;"
+        )
         status_layout.addWidget(self.status_log, 1)
 
         metrics_group = QGroupBox("Capacity Summary")
@@ -647,6 +745,9 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         self.capacity_plot_label.setStyleSheet(
             "background-color: #1a1a2e; color: #aaa; font-size: 10pt; border-radius: 6px;"
         )
+        # A pixmap's sizeHint would otherwise keep nudging the layout (and window) larger
+        # each time a rescaled plot is set, since resizeEvent re-triggers this scaling.
+        self.capacity_plot_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         plot_layout.addWidget(self.capacity_plot_label)
         plot_tab.setLayout(plot_layout)
         tabs.addTab(plot_tab, "Capacity Time History")
@@ -769,16 +870,16 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             self.file_info_label.setText(info_html)
             self.file_info_label.setTextFormat(Qt.RichText)
             self.file_info_label.setStyleSheet(
-                "color: #1a1a1a; font-size: 8pt; background-color: #e8f5e9;"
-                "border-radius: 4px; padding: 4px; border: 1px solid #a5d6a7;"
+                "color: #c8e6c9; font-size: 8pt; background-color: #123b1d;"
+                "border-radius: 4px; padding: 4px; border: 1px solid #2e7d32;"
             )
         except Exception as exc:
             message = _hdf5_open_error_message(self._channel_file_path, exc)
             QMessageBox.critical(self, "Load Error", message)
             self.file_info_label.setText(f"Error: {message}")
             self.file_info_label.setStyleSheet(
-                "color: red; font-size: 8pt; background-color: #ffebee;"
-                "border-radius: 4px; padding: 4px;"
+                "color: #ff8a80; font-size: 8pt; background-color: #3a1212;"
+                "border-radius: 4px; padding: 4px; border: 1px solid #b71c1c;"
             )
 
     def _collect_params(self):
@@ -987,6 +1088,7 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    _apply_dark_theme(app)
     toolkit = MIMOCommunicationAnalysisToolkit()
     toolkit.show()
     sys.exit(app.exec())

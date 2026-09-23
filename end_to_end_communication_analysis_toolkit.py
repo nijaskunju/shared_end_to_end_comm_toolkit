@@ -21,7 +21,7 @@ import matplotlib
 import numpy as np
 from PIL import Image, ImageSequence
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont, QImage, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QDoubleSpinBox,
     QTabWidget,
@@ -53,6 +54,8 @@ from toolkit_lib.qam_end_to_end import QAMEndToEndSystem
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+plt.style.use("dark_background")
+
 
 # Set up PySide6 platform plugin path.
 import PySide6
@@ -64,6 +67,101 @@ os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = plugin_path
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+DARK_STYLESHEET = """
+QToolTip {
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+    border: 1px solid #3a3a3a;
+}
+QGroupBox {
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    color: #e0e0e0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+    color: #90caf9;
+}
+QTabWidget::pane {
+    border: 1px solid #3a3a3a;
+}
+QTabBar::tab {
+    background: #2b2b2b;
+    color: #cfd8dc;
+    padding: 6px 12px;
+    border: 1px solid #3a3a3a;
+    border-bottom: none;
+}
+QTabBar::tab:selected {
+    background: #1e1e1e;
+    color: #ffffff;
+}
+QScrollArea {
+    border: none;
+}
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 2px;
+}
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+    color: #777777;
+    background-color: #232323;
+}
+QComboBox QAbstractItemView {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    selection-background-color: #264f78;
+}
+QProgressBar {
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    text-align: center;
+    color: #e0e0e0;
+    background-color: #1e1e1e;
+}
+QProgressBar::chunk {
+    background-color: #1976d2;
+}
+QPushButton:disabled {
+    background-color: #3a3a3a;
+    color: #808080;
+}
+QCheckBox, QRadioButton {
+    color: #e0e0e0;
+}
+"""
+
+
+def _apply_dark_theme(app):
+    """Apply a dark Fusion palette and stylesheet to the whole application."""
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor(30, 30, 30))
+    palette.setColor(QPalette.WindowText, QColor(224, 224, 224))
+    palette.setColor(QPalette.Base, QColor(24, 24, 24))
+    palette.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
+    palette.setColor(QPalette.ToolTipBase, QColor(224, 224, 224))
+    palette.setColor(QPalette.ToolTipText, QColor(224, 224, 224))
+    palette.setColor(QPalette.Text, QColor(224, 224, 224))
+    palette.setColor(QPalette.Button, QColor(45, 45, 45))
+    palette.setColor(QPalette.ButtonText, QColor(224, 224, 224))
+    palette.setColor(QPalette.BrightText, QColor(255, 82, 82))
+    palette.setColor(QPalette.Link, QColor(66, 165, 245))
+    palette.setColor(QPalette.Highlight, QColor(38, 79, 120))
+    palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+    palette.setColor(QPalette.Disabled, QPalette.Text, QColor(120, 120, 120))
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor(120, 120, 120))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(120, 120, 120))
+    app.setPalette(palette)
+    app.setStyleSheet(DARK_STYLESHEET)
 
 
 def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg):
@@ -308,11 +406,15 @@ class RSTImportWorker(QThread):
         qam_system.Ts = 1.0 / fs
         qam_system.taps_num = taps_num
 
+        bits_per_symbol = int(math.log2(qam_order))
+        data_rate_bps = symbol_rate * bits_per_symbol
+
         acc_ber = 0.0
         gif_frames = []
         avg_ber_history = []
         evm_pct_history = []
         eff_snr_history = []
+        required_bw_history = []
         self.progress_update.emit(
             0,
             f"Processing {time_samples} frames for Tx{tx_index + 1}-Rx{rx_index + 1} and generating GIF ...",
@@ -341,6 +443,12 @@ class RSTImportWorker(QThread):
             avg_ber_history.append(avg_ber)
             evm_pct_history.append(evm_pct)
             eff_snr_history.append(effective_snr_db)
+
+            spectral_efficiency = math.log2(1.0 + 10 ** (effective_snr_db / 10.0))
+            required_bw_hz = data_rate_bps / spectral_efficiency if spectral_efficiency > 0 else float("inf")
+            # Cap required bandwidth at the user-set data rate when the channel forces a lower spectral efficiency.
+            required_bw_hz = min(required_bw_hz, data_rate_bps)
+            required_bw_history.append(required_bw_hz / 1e6)
 
             panel_defs = []
             if show_channel_freq:
@@ -374,7 +482,7 @@ class RSTImportWorker(QThread):
                     ax.set_xlabel("In-Phase")
                     ax.set_ylabel("Quadrature")
                     ax.grid(True)
-                    ax.legend(loc="lower right", fontsize=7)
+                    ax.legend(loc="lower right", fontsize=7, facecolor="white", edgecolor="#bdbdbd", labelcolor="black")
                     metrics_text = "\n".join([
                         f"BER={ber:.3e}",
                         f"Theory={ber_theory:.3e}",
@@ -387,6 +495,7 @@ class RSTImportWorker(QThread):
                         metrics_text,
                         transform=ax.transAxes,
                         fontsize=7,
+                        color="black",
                         verticalalignment="top",
                         zorder=10,
                         bbox=dict(facecolor="white", alpha=0.95, edgecolor="#bdbdbd"),
@@ -429,6 +538,7 @@ class RSTImportWorker(QThread):
                             f"Integrated spectrum power: {p_total_dbm:.1f} dBm",
                             transform=ax.transAxes,
                             fontsize=7,
+                            color="black",
                             verticalalignment="bottom",
                             bbox=dict(facecolor="white", alpha=0.9, edgecolor="#bdbdbd"),
                         )
@@ -505,6 +615,7 @@ class RSTImportWorker(QThread):
             "avg_ber": avg_ber_history,
             "evm_pct": evm_pct_history,
             "eff_snr_db": eff_snr_history,
+            "required_bw_mhz": required_bw_history,
             "frames": list(range(1, len(avg_ber_history) + 1)),
             "qam_order": qam_order,
         })
@@ -633,10 +744,10 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
                 )
             except Exception as exc:
                 self.top_logo_label.setText(f"Logo load failed: {exc}")
-                self.top_logo_label.setStyleSheet("color: #b71c1c;")
+                self.top_logo_label.setStyleSheet("color: #ff6659;")
         else:
             self.top_logo_label.setText(f"Logo not found: {logo_path}")
-            self.top_logo_label.setStyleSheet("color: #b71c1c;")
+            self.top_logo_label.setStyleSheet("color: #ff6659;")
         top_row.addWidget(self.top_logo_label, 0, Qt.AlignRight | Qt.AlignTop)
         root_layout.addLayout(top_row)
 
@@ -707,7 +818,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.file_info_label = QLabel("")
         self.file_info_label.setWordWrap(True)
         self.file_info_label.setStyleSheet(
-            "color: #333; font-size: 8pt; background-color: #f0f4ff;"
+            "color: #cfd8dc; font-size: 8pt; background-color: #1c2733;"
             "border-radius: 4px; padding: 4px;"
         )
         layout.addWidget(self.file_info_label)
@@ -853,8 +964,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.bw_est_label = QLabel()
         self.bw_est_label.setWordWrap(True)
         self.bw_est_label.setStyleSheet(
-            "background-color: #e3f2fd; color: #0d47a1; font-size: 8pt;"
-            "border-radius: 4px; padding: 5px; border: 1px solid #90caf9;"
+            "background-color: #10283a; color: #82b1ff; font-size: 8pt;"
+            "border-radius: 4px; padding: 5px; border: 1px solid #2f6fa5;"
         )
         form.addRow("", self.bw_est_label)
 
@@ -912,6 +1023,13 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.chk_epoch_snr.setChecked(True)
         self.chk_epoch_snr.setToolTip("Plot measured effective SNR across all simulation frames")
         vbox.addWidget(self.chk_epoch_snr)
+
+        self.chk_epoch_channel_bw = QCheckBox("Required Bandwidth to Sustain Data Rate vs Frame")
+        self.chk_epoch_channel_bw.setChecked(True)
+        self.chk_epoch_channel_bw.setToolTip(
+            "Plot Shannon-required bandwidth to sustain the user-set Data Rate per frame, capped at the Data Rate"
+        )
+        vbox.addWidget(self.chk_epoch_channel_bw)
 
         group.setLayout(vbox)
         return group
@@ -1003,7 +1121,10 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
-        self.status_log.setStyleSheet("background-color: #f5f5f5; font-family: monospace; font-size: 9pt;")
+        self.status_log.setStyleSheet(
+            "background-color: #1a1a1a; color: #d4d4d4; font-family: monospace; font-size: 9pt;"
+            "border: 1px solid #3a3a3a;"
+        )
         svbox.addWidget(QLabel("Status Log:"), 0)
         svbox.addWidget(self.status_log, 1)
 
@@ -1043,6 +1164,9 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             "background-color: #1a1a2e; color: #aaa; font-size: 10pt; border-radius: 6px;"
         )
         self.gif_label.setMinimumHeight(350)
+        # A pixmap's sizeHint would otherwise keep nudging the layout (and window) larger
+        # each time a rescaled frame is set, since resizeEvent re-triggers this scaling.
+        self.gif_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         gvbox.addWidget(self.gif_label, 1)
 
         save_row = QHBoxLayout()
@@ -1202,15 +1326,15 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             self.file_info_label.setText(info_html)
             self.file_info_label.setTextFormat(Qt.RichText)
             self.file_info_label.setStyleSheet(
-                "color: #1a1a1a; font-size: 8pt; background-color: #e8f5e9;"
-                "border-radius: 4px; padding: 4px; border: 1px solid #a5d6a7;"
+                "color: #c8e6c9; font-size: 8pt; background-color: #123b1d;"
+                "border-radius: 4px; padding: 4px; border: 1px solid #2e7d32;"
             )
         except Exception as exc:
             QMessageBox.critical(self, "Load Error", f"Failed to read file:\n{exc}")
             self.file_info_label.setText(f"Error: {exc}")
             self.file_info_label.setStyleSheet(
-                "color: red; font-size: 8pt; background-color: #ffebee;"
-                "border-radius: 4px; padding: 4px;"
+                "color: #ff8a80; font-size: 8pt; background-color: #3a1212;"
+                "border-radius: 4px; padding: 4px; border: 1px solid #b71c1c;"
             )
 
     def _update_bw_estimate(self):
@@ -1452,11 +1576,11 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.evm_label.setText(f"{evm_pct:.2f}")
 
         if instant_ber < theory_ber * 1.5:
-            self.ber_label.setStyleSheet("color: green;")
+            self.ber_label.setStyleSheet("color: #66bb6a;")
         elif instant_ber < theory_ber * 3:
-            self.ber_label.setStyleSheet("color: orange;")
+            self.ber_label.setStyleSheet("color: #ffa726;")
         else:
-            self.ber_label.setStyleSheet("color: red;")
+            self.ber_label.setStyleSheet("color: #ef5350;")
 
     def _on_file_info(self, info):
         # Merge run-time link info without overwriting multi-link metadata loaded earlier.
@@ -1658,12 +1782,18 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
                 "Frame", "Effective SNR (dB)",
                 data["eff_snr_db"], False,
             ))
+        if self.chk_epoch_channel_bw.isChecked():
+            plots_to_render.append((
+                "Required Bandwidth to Sustain Data Rate vs. Frame",
+                "Frame", "Required Bandwidth (MHz)",
+                data["required_bw_mhz"], False,
+            ))
 
         if not plots_to_render:
             lbl = QLabel("No Scenario Plot items selected. Enable items in the Scenario Plot section and re-run.")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setWordWrap(True)
-            lbl.setStyleSheet("color: #555; font-size: 9pt; padding: 10px;")
+            lbl.setStyleSheet("color: #b0b0b0; font-size: 9pt; padding: 10px;")
             self._epoch_layout.addWidget(lbl)
             return
 
@@ -1672,6 +1802,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             "Average BER vs Frame": f"epoch_avg_ber_{qam_order}qam.gif",
             "EVM (%) vs Frame": f"epoch_evm_pct_{qam_order}qam.gif",
             "Effective SNR (dB) vs Frame": f"epoch_eff_snr_db_{qam_order}qam.gif",
+            "Required Bandwidth to Sustain Data Rate vs. Frame": f"epoch_required_bw_mhz_{qam_order}qam.gif",
         }
         for (title, xlabel, ylabel, values, use_log_y) in plots_to_render:
             pixmap, pil_img = self._render_epoch_plot(
@@ -1739,6 +1870,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    _apply_dark_theme(app)
     toolkit = EndToEndCommunicationAnalysisToolkit()
     toolkit.show()
     sys.exit(app.exec())
