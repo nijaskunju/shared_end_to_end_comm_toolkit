@@ -68,7 +68,8 @@
     <div class="card">
       <h2>1) Toolkit Architecture</h2>
       <ul>
-        <li><b>Input Channel Model:</b> Imported frequency response H(f) from RST/RSP is converted to an impulse response h(t) through IFFT-based FIR extraction.</li>
+        <li><b>Input Channel Model:</b> Frequency response H(f) comes from either an RST/RSP archive or a live STK/RFCM project and is converted to an impulse response h(t) through IFFT-based FIR extraction.</li>
+        <li><b>Live RFCM Mode:</b> STK Engine loads a VDF/SC project, discovers valid RFCM analysis configurations and links, and computes each selected link response in memory at its configured frame times. No intermediate HDF5 archive is required.</li>
         <li><b>Transmit Chain:</b> Bits -> Gray-coded M-QAM mapping -> RRC pulse shaping -> oversampled baseband -> RF upconversion at configured center frequency (or active hopping frequency).</li>
         <li><b>Propagation/Channel:</b> RF waveform is convolved with h(t), representing the selected Tx-Rx coupling path from the imported file.</li>
         <li><b>Noise Model:</b> Either direct SNR-mode AWGN or Tx power + broadband Rx noise mode with power-consistent noise injection.</li>
@@ -115,6 +116,12 @@
     </div>
 
     <div class="card">
+      <h2>Live STK / RFCM Project Mode</h2>
+      <p>Select <b>STK/RFCM Project (VDF/SC)</b>, browse to the project, and click <b>Load Metadata</b>. The <b>RFCM Analysis</b> list appears immediately before <b>Link</b>. Selecting an analysis reconstructs and repopulates its available links automatically, then updates the antenna controls for the selected link.</p>
+      <p>This mode requires STK 13.1, STK Engine and RF Channel Modeler licenses, and the <code>agi_stk13</code> wheel supplied under the STK installation's <code>bin/AgPythonAPI</code> directory. RFCM runs through STK Engine in an isolated broker process and returns frequency-pulse responses frame by frame. The process boundary avoids STK's one-Engine-instance-per-Python-process restriction. A bounded two-frame buffer lets RFCM compute upcoming frames while the toolkit post-processes the current frame.</p>
+    </div>
+
+    <div class="card">
       <h2>4) User Inputs - Technical Meaning and Theory</h2>
       <table>
         <thead>
@@ -157,6 +164,9 @@
       </ul>
       <div class="note">
         <b>Important:</b> RX RF spectrum axis limits remain locked to the imported RSP center frequency and bandwidth, so frame-to-frame comparisons stay consistent.
+      </div>
+      <div class="note">
+        <b>RX RF spectrum convention:</b> The received analytic RF samples are first mixed back to their complex envelope so a carrier above the discrete-time Nyquist frequency cannot wrap to the FFT edges. A shifted FFT is then mapped back around the physical RF center frequency. Power is displayed in dBm per true FFT bin at the RBW shown in the title; the integrated value sums those bins without interpolation onto the RFCM frequency grid.
       </div>
     </div>
 

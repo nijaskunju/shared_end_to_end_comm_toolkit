@@ -24,6 +24,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -49,7 +50,52 @@ from PySide6.QtWidgets import (
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from toolkit_lib.channel_sources import create_channel_source
+
 plt.style.use("dark_background")
+
+# Bright, widely separated hues that stay legible on the toolkit's black plot background.
+DARK_STREAM_COLORS = [
+    "#29b6f6",
+    "#ffee58",
+    "#66bb6a",
+    "#e040fb",
+    "#ff9100",
+    "#00e5ff",
+    "#b388ff",
+    "#d4e157",
+]
+# Deeper hues for PNG export, where plots are usually reused on a white page.
+LIGHT_STREAM_COLORS = [
+    "#1565c0",
+    "#ef6c00",
+    "#2e7d32",
+    "#6a1b9a",
+    "#00838f",
+    "#8d6e63",
+    "#c2185b",
+    "#37474f",
+]
+DARK_SERIES_COLORS = {
+    "capacity": "#42a5f5",
+    "condition": "#ffa726",
+    "dominant": "#ef9a9a",
+    "rank": "#ff5252",
+    "reference": "#b0bec5",
+}
+LIGHT_SERIES_COLORS = {
+    "capacity": "#1565c0",
+    "condition": "#ef6c00",
+    "dominant": "#ad1457",
+    "rank": "#d32f2f",
+    "reference": "#546e7a",
+}
+
+
+def _stream_palette(colors, count):
+    """Cycle a qualitative palette to cover every spatial stream."""
+    return [colors[index % len(colors)] for index in range(max(count, 1))]
+
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
@@ -148,6 +194,20 @@ def _apply_dark_theme(app):
     app.setStyleSheet(DARK_STYLESHEET)
 
 
+def _bandlimited_resampler(source_freqs, subcarrier_freqs):
+    """Build the band-limited (IDFT/DFT) resampling matrix from the CFR grid to the OFDM grid.
+
+    The imported CFR is transformed to the delay domain, then evaluated back onto the
+    requested subcarrier frequencies, which preserves the channel delay structure that
+    component-wise linear interpolation smears.
+    """
+    n_s = len(source_freqs)
+    freq_step_hz = (source_freqs[-1] - source_freqs[0]) / max(n_s - 1, 1)
+    delays_s = np.fft.fftfreq(n_s, d=freq_step_hz)
+    freq_offsets_hz = np.asarray(subcarrier_freqs) - source_freqs[0]
+    return np.exp(2j * np.pi * np.outer(freq_offsets_hz, delays_s))
+
+
 def _read_interpolated_sounding(
     response_dataset,
     frame_index,
@@ -156,21 +216,81 @@ def _read_interpolated_sounding(
     n_rx,
     n_p,
     n_s,
-    source_freqs,
-    subcarrier_freqs,
+    resample_matrix,
 ):
-    """Read one sounding and interpolate each port path onto the OFDM grid."""
-    channel = np.empty((len(subcarrier_freqs), n_rx, n_tx), dtype=np.complex128)
+    """Read one sounding and band-limited resample each port path onto the OFDM grid."""
+    channel = np.empty((resample_matrix.shape[0], n_rx, n_tx), dtype=np.complex128)
     for tx_index in range(n_tx):
         for rx_index in range(n_rx):
             complex_start = ((tx_index * n_rx + rx_index) * n_p + sounding_index) * n_s
             raw_start = 2 * complex_start
             raw_values = response_dataset[frame_index, raw_start : raw_start + 2 * n_s]
             response = raw_values[0::2] + 1j * raw_values[1::2]
-            channel[:, rx_index, tx_index] = np.interp(
-                subcarrier_freqs, source_freqs, response.real
-            ) + 1j * np.interp(subcarrier_freqs, source_freqs, response.imag)
+            channel[:, rx_index, tx_index] = resample_matrix @ np.fft.ifft(response)
     return channel
+
+
+def _resample_channel_sounding(channel, resample_matrix):
+    """Band-limit and resample a (Tx, Rx, frequency) channel onto OFDM subcarriers."""
+    delay_domain = np.fft.ifft(channel, axis=2)
+    return np.einsum("kn,trn->krt", resample_matrix, delay_domain)
+
+
+def _terminal_node_name(fid, link, terminal):
+    """Best-effort read of the station/node name for a link terminal."""
+    group = fid[f"/Links/{link}/{terminal}"]
+    for key in ("Name", "name", "Station Name", "station_name", "Node Name", "node_name", "NodeName", "Station"):
+        if key in group.attrs:
+            value = np.atleast_1d(group.attrs[key])[0]
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="ignore")
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
+
+
+def _delay_profile_metrics(channel, subcarrier_spacing_hz):
+    """RMS delay spread and coherence bandwidth from the port-averaged power delay profile."""
+    n_subcarriers = channel.shape[0]
+    impulse_response = np.fft.ifft(channel, axis=0)
+    power = np.mean(np.abs(impulse_response) ** 2, axis=(1, 2))
+    # Only the first half of the IFFT carries causal delays; the rest is the negative-delay wrap.
+    causal_taps = max(n_subcarriers // 2, 1)
+    power = power[:causal_taps]
+    delays_s = np.arange(causal_taps) / (n_subcarriers * subcarrier_spacing_hz)
+    total_power = float(np.sum(power))
+    if total_power <= 0.0:
+        return float("nan"), float("nan")
+    mean_delay_s = float(np.sum(delays_s * power) / total_power)
+    variance = float(np.sum(((delays_s - mean_delay_s) ** 2) * power) / total_power)
+    rms_delay_s = float(np.sqrt(max(variance, 0.0)))
+    if rms_delay_s <= 0.0:
+        return rms_delay_s, float("nan")
+    # Common flat-fading rule of thumb for 0.5 correlation bandwidth.
+    return rms_delay_s, 1.0 / (5.0 * rms_delay_s)
+
+
+def _temporal_correlation(previous_channel, channel):
+    """Normalised magnitude correlation between two soundings of the same link."""
+    if previous_channel is None or previous_channel.shape != channel.shape:
+        return float("nan")
+    cross = abs(complex(np.vdot(previous_channel, channel)))
+    energy = float(np.vdot(previous_channel, previous_channel).real) * float(
+        np.vdot(channel, channel).real
+    )
+    if energy <= 0.0:
+        return float("nan")
+    return float(min(cross / np.sqrt(energy), 1.0))
+
+
+def _coherence_time(correlation, delta_time_s):
+    """Coherence time implied by an exponential fit to a single correlation lag."""
+    if not np.isfinite(correlation) or correlation <= 0.0 or delta_time_s <= 0.0:
+        return float("nan")
+    if correlation >= 1.0:
+        return float("inf")
+    return float(-delta_time_s / np.log(correlation))
 
 
 def _hdf5_open_error_message(file_path, exc):
@@ -207,6 +327,8 @@ def _mimo_capacity(
     effective_rank_sum = xp.asarray(0.0)
     condition_sum = xp.asarray(0.0)
     dominant_fraction_sum = xp.asarray(0.0)
+    eigenvalue_sums = xp.zeros(gram_size)
+    stream_efficiency_sums = xp.zeros(gram_size)
     for start in range(0, n_subcarriers, subcarrier_batch_size):
         channel_batch = channel[start : start + subcarrier_batch_size]
         channel_h = xp.swapaxes(xp.conj(channel_batch), 1, 2)
@@ -239,6 +361,13 @@ def _mimo_capacity(
         # eigvalsh returns ascending eigenvalues, so the last probability is the dominant fraction.
         dominant_fraction_sum += xp.sum(probabilities[:, -1])
 
+        # Report streams strongest-first; equal power per Tx makes these per-stream rates sum to the total.
+        eigenvalues_descending = eigenvalues[:, ::-1]
+        eigenvalue_sums += xp.sum(eigenvalues_descending, axis=0)
+        stream_efficiency_sums += xp.sum(
+            xp.log2(1.0 + scale * eigenvalues_descending), axis=0
+        )
+
         largest = eigenvalues[:, -1]
         smallest = eigenvalues[:, 0]
         condition_values = xp.sqrt(
@@ -252,6 +381,8 @@ def _mimo_capacity(
         effective_rank_sum / n_subcarriers,
         condition_sum / n_subcarriers,
         dominant_fraction_sum / n_subcarriers,
+        eigenvalue_sums / n_subcarriers,
+        subcarrier_spacing_hz * stream_efficiency_sums,
     )
 
 
@@ -294,37 +425,28 @@ class MIMOCapacityWorker(QThread):
         ranks = []
         condition_numbers = []
         dominant_fractions = []
+        stream_eigenvalues = []
+        stream_capacities = []
+        delay_spreads = []
+        coherence_bandwidths = []
+        temporal_correlations = []
+        coherence_times = []
         result_times = []
         frame_indices = []
         sounding_indices = []
-        try:
-            fid = h5py.File(self.file_path, "r")
-        except OSError as exc:
-            raise OSError(_hdf5_open_error_message(self.file_path, exc)) from exc
-
-        with fid:
-            n_tx = int(fid[f"/Links/{link}/Transmitter"].attrs["Antenna Count"][0])
-            n_rx = int(fid[f"/Links/{link}/Receiver"].attrs["Antenna Count"][0])
-            waveform = fid[f"/Links/{link}/Waveform"]
-            n_p = int(waveform.attrs["Channel Soundings"][0])
-            n_s = int(waveform.attrs["Sample Count"][0])
-            sounding_interval_s = float(waveform.attrs["Sounding Interval"][0])
-            bandwidth_hz = float(waveform.attrs["Bandwidth"][0])
-            center_frequency_hz = float(waveform.attrs["Frequency"][0])
-            time_array = fid[f"/Links/{link}/Channel Characterization/Time Array"][:]
-            response_dataset = fid[f"/Links/{link}/Channel Characterization/Response"]
-
-            time_samples = len(time_array[0])
-            expected_values_per_frame = 2 * n_tx * n_rx * n_p * n_s
-            if response_dataset.ndim != 2 or response_dataset.shape[0] < time_samples:
-                raise ValueError(
-                    "The Response dataset does not contain the expected number of time frames."
-                )
-            if response_dataset.shape[1] < expected_values_per_frame:
-                raise ValueError(
-                    "The Response dataset is smaller than its antenna, sounding, and sample metadata requires."
-                )
-
+        source_type = self.params.get("source_type", "hdf5")
+        analysis_name = self.params.get("analysis_name")
+        with create_channel_source(self.file_path, source_type, analysis_name) as source:
+            metadata = source.link_metadata(link)
+            n_tx = metadata.n_tx
+            n_rx = metadata.n_rx
+            tx_node = metadata.transmitter_name
+            rx_node = metadata.receiver_name
+            n_p = metadata.n_soundings
+            n_s = metadata.n_frequency_samples
+            bandwidth_hz = metadata.bandwidth_hz
+            center_frequency_hz = metadata.center_frequency_hz
+            time_samples = metadata.n_frames
             source_freqs = np.linspace(
                 center_frequency_hz - bandwidth_hz / 2.0,
                 center_frequency_hz + bandwidth_hz / 2.0,
@@ -340,59 +462,70 @@ class MIMOCapacityWorker(QThread):
                 )
             offsets = (np.arange(n_subcarriers) - (n_subcarriers - 1) / 2.0) * spacing_hz
             subcarrier_freqs = center_frequency_hz + offsets
+            resample_matrix = _bandlimited_resampler(source_freqs, subcarrier_freqs)
 
             tx_power_w = 10.0 ** ((self.params["tx_power_dbm"] - 30.0) / 10.0)
             noise_density_w_hz = 10.0 ** ((self.params["noise_density_dbm_hz"] - 30.0) / 10.0)
             noise_figure_linear = 10.0 ** (self.params["noise_figure_db"] / 10.0)
             total_soundings = time_samples * n_p
-            for frame_index in range(time_samples):
+            previous_channel = None
+            previous_time_s = None
+            for sample_number, sounding in enumerate(source.iterate_soundings(link), 1):
                 if not self.is_running:
                     break
-                frame_time_s = float(np.asarray(time_array[0]).reshape(-1)[frame_index])
-                for sounding_index in range(n_p):
-                    if not self.is_running:
-                        break
-                    channel = _read_interpolated_sounding(
-                        response_dataset,
-                        frame_index,
-                        sounding_index,
-                        n_tx,
-                        n_rx,
-                        n_p,
-                        n_s,
-                        source_freqs,
-                        subcarrier_freqs,
-                    )
-                    if use_gpu:
-                        channel = xp.asarray(channel)
-                    metrics = _mimo_capacity(
-                        channel,
-                        spacing_hz,
-                        tx_power_w,
-                        noise_density_w_hz,
-                        noise_figure_linear,
-                        xp,
-                    )
-                    if use_gpu:
-                        metrics = tuple(float(xp.asnumpy(value)) for value in metrics)
-                    else:
-                        metrics = tuple(float(value) for value in metrics)
-                    capacity_bps, efficiency, rank, condition, dominant_fraction = metrics
-                    capacities.append(capacity_bps)
-                    spectral_efficiencies.append(efficiency)
-                    ranks.append(rank)
-                    condition_numbers.append(condition)
-                    dominant_fractions.append(dominant_fraction)
-                    result_times.append(frame_time_s + sounding_index * sounding_interval_s)
-                    frame_indices.append(frame_index + 1)
-                    sounding_indices.append(sounding_index + 1)
-                    sample_number = frame_index * n_p + sounding_index + 1
-                    self.progress_update.emit(
-                        sample_number,
-                        total_soundings,
-                        f"Frame {frame_index + 1}/{time_samples}, sounding "
-                        f"{sounding_index + 1}/{n_p}: {capacity_bps / 1e9:.3f} Gbps",
-                    )
+                channel = _resample_channel_sounding(
+                    sounding.channel, resample_matrix
+                )
+                sounding_time_s = sounding.time_s
+                rms_delay_s, coherence_bandwidth_hz = _delay_profile_metrics(
+                    channel, spacing_hz
+                )
+                correlation = _temporal_correlation(previous_channel, channel)
+                coherence_time_s = _coherence_time(
+                    correlation,
+                    sounding_time_s - previous_time_s
+                    if previous_time_s is not None
+                    else 0.0,
+                )
+                previous_channel = channel
+                previous_time_s = sounding_time_s
+                if use_gpu:
+                    channel = xp.asarray(channel)
+                metrics = _mimo_capacity(
+                    channel,
+                    spacing_hz,
+                    tx_power_w,
+                    noise_density_w_hz,
+                    noise_figure_linear,
+                    xp,
+                )
+                if use_gpu:
+                    metrics = tuple(xp.asnumpy(value) for value in metrics)
+                scalar_metrics = tuple(float(value) for value in metrics[:5])
+                capacity_bps, efficiency, rank, condition, dominant_fraction = scalar_metrics
+                eigenvalues_per_stream, capacity_per_stream = (
+                    np.asarray(value, dtype=float) for value in metrics[5:]
+                )
+                capacities.append(capacity_bps)
+                spectral_efficiencies.append(efficiency)
+                ranks.append(rank)
+                condition_numbers.append(condition)
+                dominant_fractions.append(dominant_fraction)
+                stream_eigenvalues.append(eigenvalues_per_stream.tolist())
+                stream_capacities.append(capacity_per_stream.tolist())
+                delay_spreads.append(rms_delay_s)
+                coherence_bandwidths.append(coherence_bandwidth_hz)
+                temporal_correlations.append(correlation)
+                coherence_times.append(coherence_time_s)
+                result_times.append(sounding_time_s)
+                frame_indices.append(sounding.frame_index)
+                sounding_indices.append(sounding.sounding_index)
+                self.progress_update.emit(
+                    sample_number,
+                    total_soundings,
+                    f"Frame {sounding.frame_index}/{time_samples}, sounding "
+                    f"{sounding.sounding_index}/{n_p}: {capacity_bps / 1e9:.3f} Gbps",
+                )
 
         result_time = np.asarray(result_times)
         safe_link = "".join(character if character.isalnum() else "_" for character in link).strip("_")
@@ -407,6 +540,10 @@ class MIMOCapacityWorker(QThread):
                 ranks,
                 condition_numbers,
                 dominant_fractions,
+                delay_spreads,
+                coherence_bandwidths,
+                temporal_correlations,
+                coherence_times,
             )
         )
         np.savetxt(
@@ -416,13 +553,15 @@ class MIMOCapacityWorker(QThread):
             header=(
                 "time_s,frame_index,sounding_index,capacity_bps,"
                 "mean_spectral_efficiency_bps_hz,effective_rank,condition_number,"
-                "dominant_eigenvalue_fraction"
+                "dominant_eigenvalue_fraction,rms_delay_spread_s,coherence_bandwidth_hz,"
+                "adjacent_sounding_correlation,coherence_time_s"
             ),
             comments="",
         )
 
         return {
             "link": link,
+            "link_label": f"{tx_node} to {rx_node}" if (tx_node and rx_node) else link,
             "frames": list(range(1, len(capacities) + 1)),
             "time_seconds": result_time.tolist(),
             "capacity_bps": capacities,
@@ -430,6 +569,13 @@ class MIMOCapacityWorker(QThread):
             "rank": ranks,
             "condition_number": condition_numbers,
             "dominant_eigenvalue_fraction": dominant_fractions,
+            "stream_eigenvalues": stream_eigenvalues,
+            "stream_capacity_bps": stream_capacities,
+            "rms_delay_spread_s": delay_spreads,
+            "coherence_bandwidth_hz": coherence_bandwidths,
+            "temporal_correlation": temporal_correlations,
+            "coherence_time_s": coherence_times,
+            "subcarrier_spacing_hz": spacing_hz,
             "n_tx": n_tx,
             "n_rx": n_rx,
             "n_frames": time_samples,
@@ -568,6 +714,7 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
 
         layout.addWidget(self._build_file_group())
         layout.addWidget(self._build_capacity_group())
+        layout.addWidget(self._build_plot_group())
         layout.addWidget(self._build_run_group())
         layout.addStretch()
 
@@ -575,8 +722,14 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         return container
 
     def _build_file_group(self):
-        self.file_group = QGroupBox("RST File Import")
+        self.file_group = QGroupBox("Channel Source")
         layout = QVBoxLayout()
+
+        self.source_mode_combo = QComboBox()
+        self.source_mode_combo.addItem("HDF5 Archive (RST/RSP)", "hdf5")
+        self.source_mode_combo.addItem("STK/RFCM Project (VDF/SC)", "rfcm")
+        self.source_mode_combo.currentIndexChanged.connect(self._on_source_mode_changed)
+        layout.addWidget(self.source_mode_combo)
 
         row = QHBoxLayout()
         self.file_path_edit = QLineEdit()
@@ -587,6 +740,14 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         row.addWidget(self.file_path_edit, 1)
         row.addWidget(self.btn_browse)
         layout.addLayout(row)
+
+        self.analysis_combo = QComboBox()
+        self.analysis_combo.addItem("(load an RFCM project)", None)
+        self.analysis_combo.setEnabled(False)
+        self.analysis_combo.setToolTip(
+            "Select an RFCM analysis configuration; available links update automatically"
+        )
+        self.analysis_combo.currentIndexChanged.connect(self._on_analysis_changed)
 
         self.btn_load_metadata = QPushButton("Load Metadata")
         self.btn_load_metadata.setEnabled(False)
@@ -662,6 +823,7 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             "border-radius: 4px; padding: 5px; border: 1px solid #2f6fa5;"
         )
 
+        form.addRow("RFCM Analysis:", self.analysis_combo)
         form.addRow("Link:", self.link_combo)
         form.addRow("Subcarrier Spacing:", self.scs_combo)
         form.addRow("Resource Blocks:", self.resource_blocks_spinbox)
@@ -675,6 +837,41 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         self.resource_blocks_spinbox.valueChanged.connect(self._update_ofdm_summary)
         group.setLayout(form)
         self._update_ofdm_summary()
+        return group
+
+    def _build_plot_group(self):
+        group = QGroupBox("Optional Plots")
+        layout = QVBoxLayout()
+
+        self.stream_capacity_checkbox = QCheckBox("Per-Stream Capacity")
+        self.stream_capacity_checkbox.setChecked(True)
+        self.stream_capacity_checkbox.setToolTip(
+            "Plot the capacity carried by each eigenvalue stream over scenario time"
+        )
+        layout.addWidget(self.stream_capacity_checkbox)
+
+        self.capacity_cdf_checkbox = QCheckBox("Capacity CDF (Outage Capacity)")
+        self.capacity_cdf_checkbox.setChecked(True)
+        self.capacity_cdf_checkbox.setToolTip(
+            "Plot the capacity distribution across all soundings, with 10% and 50% outage markers"
+        )
+        layout.addWidget(self.capacity_cdf_checkbox)
+
+        self.delay_spread_checkbox = QCheckBox("Delay Spread and Coherence Bandwidth")
+        self.delay_spread_checkbox.setChecked(True)
+        self.delay_spread_checkbox.setToolTip(
+            "Plot RMS delay spread and the implied coherence bandwidth against the configured subcarrier spacing"
+        )
+        layout.addWidget(self.delay_spread_checkbox)
+
+        self.coherence_time_checkbox = QCheckBox("Temporal Correlation and Coherence Time")
+        self.coherence_time_checkbox.setChecked(True)
+        self.coherence_time_checkbox.setToolTip(
+            "Plot the correlation between consecutive soundings and the coherence time it implies"
+        )
+        layout.addWidget(self.coherence_time_checkbox)
+
+        group.setLayout(layout)
         return group
 
     def _build_run_group(self):
@@ -747,25 +944,57 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         )
         # A pixmap's sizeHint would otherwise keep nudging the layout (and window) larger
         # each time a rescaled plot is set, since resizeEvent re-triggers this scaling.
-        self.capacity_plot_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        plot_layout.addWidget(self.capacity_plot_label)
+        self.capacity_plot_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self._capacity_scroll = QScrollArea()
+        self._capacity_scroll.setWidgetResizable(True)
+        # Reserving the scrollbar keeps the viewport width stable, so rescaling cannot oscillate.
+        self._capacity_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self._capacity_scroll.setWidget(self.capacity_plot_label)
+        plot_layout.addWidget(self._capacity_scroll)
         plot_tab.setLayout(plot_layout)
         tabs.addTab(plot_tab, "Capacity Time History")
 
         self._tabs = tabs
         return tabs
 
+    def _on_source_mode_changed(self):
+        is_rfcm = self.source_mode_combo.currentData() == "rfcm"
+        self.analysis_combo.setEnabled(is_rfcm)
+        self.file_path_edit.clear()
+        self._channel_file_path = ""
+        self._file_metadata = {}
+        self.btn_load_metadata.setEnabled(False)
+        self.analysis_combo.clear()
+        self.analysis_combo.addItem(
+            "(load an RFCM project)" if is_rfcm else "(not used for HDF5)",
+            None,
+        )
+        self.file_info_label.setText("")
+
+    def _on_analysis_changed(self):
+        if (
+            self.source_mode_combo.currentData() == "rfcm"
+            and self.analysis_combo.currentData()
+            and self._channel_file_path
+        ):
+            self._load_file_metadata()
+
     def _browse_file(self):
+        is_rfcm = self.source_mode_combo.currentData() == "rfcm"
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select RST/RSP File",
+            "Select STK/RFCM Project" if is_rfcm else "Select RST/RSP File",
             "",
-            "RST and RSP Files (*.rst *.rsp);;All Files (*.*)",
+            (
+                "STK Projects (*.vdf *.sc);;All Files (*.*)"
+                if is_rfcm
+                else "RST and RSP Files (*.rst *.rsp);;All Files (*.*)"
+            ),
         )
         if file_path:
             self._channel_file_path = file_path
             self.file_path_edit.setText(file_path)
-            self.file_info_label.setText("File selected. Click Load Metadata to read parameters.")
+            self.file_info_label.setText("Source selected. Click Load Metadata to inspect it.")
             self.btn_load_metadata.setEnabled(True)
 
     def _on_link_changed(self):
@@ -802,37 +1031,60 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             QMessageBox.warning(self, "File Error", "Selected file was not found.")
             return
 
+        source_type = self.source_mode_combo.currentData()
+        selected_analysis = self.analysis_combo.currentData() if source_type == "rfcm" else None
         try:
             links_metadata = {}
-            with h5py.File(self._channel_file_path, "r") as fid:
-                links = list(fid["/Links"])
-                if not links:
-                    raise ValueError("No links found in file.")
+            with create_channel_source(
+                self._channel_file_path,
+                source_type,
+                selected_analysis,
+            ) as source:
+                analyses = source.list_analyses()
+                if source_type == "rfcm":
+                    valid_analyses = [item for item in analyses if item.valid]
+                    if not valid_analyses:
+                        messages = "; ".join(
+                            f"{item.name}: {item.message}" for item in analyses
+                        )
+                        raise ValueError(
+                            "No valid RFCM communications analysis was found. " + messages
+                        )
+                    available_names = [item.name for item in valid_analyses]
+                    if selected_analysis not in available_names:
+                        selected_analysis = available_names[0]
+                    source.select_analysis(selected_analysis)
+                    self.analysis_combo.blockSignals(True)
+                    self.analysis_combo.clear()
+                    for item in valid_analyses:
+                        self.analysis_combo.addItem(item.name, item.name)
+                    self.analysis_combo.setCurrentIndex(
+                        self.analysis_combo.findData(selected_analysis)
+                    )
+                    self.analysis_combo.blockSignals(False)
 
-                for lname in links:
-                    n_tx = int(fid[f"/Links/{lname}/Transmitter"].attrs["Antenna Count"][0])
-                    n_rx = int(fid[f"/Links/{lname}/Receiver"].attrs["Antenna Count"][0])
-                    n_p = int(fid[f"/Links/{lname}/Waveform"].attrs["Channel Soundings"][0])
-                    n_s = int(fid[f"/Links/{lname}/Waveform"].attrs["Sample Count"][0])
-                    i_s = float(fid[f"/Links/{lname}/Waveform"].attrs["Sounding Interval"][0])
-                    bw = float(fid[f"/Links/{lname}/Waveform"].attrs["Bandwidth"][0])
-                    fc = float(fid[f"/Links/{lname}/Waveform"].attrs["Frequency"][0])
-                    time_array = fid[f"/Links/{lname}/Channel Characterization/Time Array"][:]
-                    time_samples = len(time_array[0])
-                    tx_names = self._extract_antenna_names(fid, lname, "Transmitter", n_tx)
-                    rx_names = self._extract_antenna_names(fid, lname, "Receiver", n_rx)
-
+                link_infos = source.list_links()
+                links = [item.identifier for item in link_infos]
+                for item in link_infos:
+                    lname = item.identifier
+                    metadata = source.link_metadata(lname)
                     links_metadata[lname] = {
-                        "fc_GHz": fc / 1e9,
-                        "bw_MHz": bw / 1e6,
-                        "nTx": n_tx,
-                        "nRx": n_rx,
-                        "nP": n_p,
-                        "nS": n_s,
-                        "iS_ms": i_s * 1e3,
-                        "Tsamps": time_samples,
-                        "tx_names": tx_names,
-                        "rx_names": rx_names,
+                        "fc_GHz": metadata.center_frequency_hz / 1e9,
+                        "bw_MHz": metadata.bandwidth_hz / 1e6,
+                        "nTx": metadata.n_tx,
+                        "nRx": metadata.n_rx,
+                        "nP": metadata.n_soundings,
+                        "nS": metadata.n_frequency_samples,
+                        "iS_ms": metadata.sounding_interval_s * 1e3,
+                        "Tsamps": metadata.n_frames,
+                        "tx_names": [
+                            f"{metadata.transmitter_name} [{index + 1}]"
+                            for index in range(metadata.n_tx)
+                        ],
+                        "rx_names": [
+                            f"{metadata.receiver_name} [{index + 1}]"
+                            for index in range(metadata.n_rx)
+                        ],
                     }
 
             first_link = links[0]
@@ -844,6 +1096,8 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
                 "bw_MHz": first_meta["bw_MHz"],
                 "links": links,
                 "links_metadata": links_metadata,
+                "source_type": source_type,
+                "analysis_name": selected_analysis,
             }
 
             self.link_combo.blockSignals(True)
@@ -874,7 +1128,11 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
                 "border-radius: 4px; padding: 4px; border: 1px solid #2e7d32;"
             )
         except Exception as exc:
-            message = _hdf5_open_error_message(self._channel_file_path, exc)
+            message = (
+                str(exc)
+                if source_type == "rfcm"
+                else _hdf5_open_error_message(self._channel_file_path, exc)
+            )
             QMessageBox.critical(self, "Load Error", message)
             self.file_info_label.setText(f"Error: {message}")
             self.file_info_label.setStyleSheet(
@@ -884,6 +1142,8 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
 
     def _collect_params(self):
         return {
+            "source_type": self.source_mode_combo.currentData(),
+            "analysis_name": self.analysis_combo.currentData(),
             "link": self.link_combo.currentData(),
             "subcarrier_spacing_hz": float(self.scs_combo.currentData()),
             "resource_blocks": self.resource_blocks_spinbox.value(),
@@ -898,7 +1158,7 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             QMessageBox.warning(self, "Analysis Running", "MIMO capacity analysis is already running.")
             return
         if not self._channel_file_path or not self._file_metadata:
-            QMessageBox.warning(self, "No Metadata", "Select a channel file and load its metadata first.")
+            QMessageBox.warning(self, "No Metadata", "Select a channel source and load its metadata first.")
             return
 
         params = self._collect_params()
@@ -915,6 +1175,10 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             return
 
         self.status_log.clear()
+        self.status_log.append(
+            f"Source: {'Live STK/RFCM' if params['source_type'] == 'rfcm' else 'HDF5 archive'}"
+            + (f" | Analysis: {params['analysis_name']}" if params.get("analysis_name") else "")
+        )
         self.status_log.append(
             f"Link: {params['link']} | MIMO: {link_metadata['nTx']} Tx x {link_metadata['nRx']} Rx"
         )
@@ -981,62 +1245,228 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         ranks = np.asarray(results["rank"])
         condition_numbers = np.asarray(results["condition_number"])
         dominant_fractions = np.asarray(results["dominant_eigenvalue_fraction"])
+        eigenvalues = np.asarray(results["stream_eigenvalues"], dtype=float)
+        stream_capacities_gbps = np.asarray(results["stream_capacity_bps"], dtype=float) / 1e9
+        delay_spread_ns = np.asarray(results.get("rms_delay_spread_s", []), dtype=float) * 1e9
+        coherence_bandwidth_khz = np.asarray(results.get("coherence_bandwidth_hz", []), dtype=float) / 1e3
+        temporal_correlation = np.asarray(results.get("temporal_correlation", []), dtype=float)
+        coherence_time_ms = np.asarray(results.get("coherence_time_s", []), dtype=float) * 1e3
+        subcarrier_spacing_khz = float(results.get("subcarrier_spacing_hz", 0.0)) / 1e3
         max_rank = min(results["n_tx"], results["n_rx"])
+        n_streams = eigenvalues.shape[1] if eigenvalues.ndim == 2 else 0
+        link_label = results.get("link_label") or results["link"]
+        # Drawing helpers read the active theme so the same code serves the dark UI and the light PNGs.
+        theme = {
+            "streams": _stream_palette(DARK_STREAM_COLORS, n_streams),
+            "series": DARK_SERIES_COLORS,
+        }
 
         safe_link = "".join(
             character if character.isalnum() else "_" for character in results["link"]
         ).strip("_") or "link"
 
+        def draw_capacity(axis):
+            axis.plot(scenario_time, capacities_gbps, color=theme["series"]["capacity"], linewidth=1.4)
+            axis.set_ylabel("Capacity (Gbps)")
+            axis.set_ylim(0.0, float(np.max(capacities_gbps)) * 1.05 if capacities_gbps.size else 1.0)
+
+        def draw_eigenvalue_spectrum(axis):
+            eigenvalues_db = 10.0 * np.log10(np.maximum(eigenvalues, 1e-300))
+            for stream in range(n_streams):
+                axis.plot(
+                    scenario_time,
+                    eigenvalues_db[:, stream],
+                    color=theme["streams"][stream],
+                    linewidth=1.1,
+                    label=f"Eigenvalue {stream + 1}",
+                )
+            axis.set_ylabel("Eigenvalue (dB)")
+            # Effective rank shares the time axis but not the eigenvalue scale.
+            rank_color = theme["series"]["rank"]
+            rank_axis = axis.twinx()
+            rank_axis.plot(scenario_time, ranks, color=rank_color, linewidth=2.6, label="Effective Rank")
+            rank_axis.set_ylabel("Effective Rank", color=rank_color)
+            rank_axis.tick_params(axis="y", colors=rank_color)
+            rank_axis.set_ylim(0, max_rank + 0.5)
+            handles, labels = axis.get_legend_handles_labels()
+            rank_handles, rank_labels = rank_axis.get_legend_handles_labels()
+            axis.legend(
+                handles + rank_handles,
+                labels + rank_labels,
+                fontsize=7,
+                loc="upper right",
+                ncol=2,
+            )
+
+        def draw_stream_capacity(axis):
+            for stream in range(n_streams):
+                axis.plot(
+                    scenario_time,
+                    stream_capacities_gbps[:, stream],
+                    color=theme["streams"][stream],
+                    linewidth=1.1,
+                    label=f"Stream {stream + 1}",
+                )
+            axis.set_ylabel("Per-Stream Capacity (Gbps)")
+            axis.set_ylim(bottom=0.0)
+            axis.legend(fontsize=7, loc="upper right", ncol=2)
+
+        def draw_condition_number(axis):
+            axis.plot(scenario_time, condition_numbers, color=theme["series"]["condition"], linewidth=1.4)
+            axis.set_ylabel("Condition Number")
+            # A condition number of 1 (ideal, fully orthogonal channel) stays on the axis as a reference.
+            axis.axhline(1.0, color=theme["series"]["reference"], linestyle="--", linewidth=1.0, alpha=0.8)
+            largest = float(np.max(condition_numbers)) if condition_numbers.size else 1.0
+            if bool(np.all(condition_numbers > 0)):
+                axis.set_yscale("log")
+                axis.set_ylim(0.9, max(largest * 1.2, 1.5))
+            else:
+                axis.set_ylim(0.0, max(largest * 1.05, 1.1))
+
+        def draw_dominant_fraction(axis):
+            axis.plot(scenario_time, dominant_fractions, color=theme["series"]["dominant"], linewidth=1.4)
+            axis.set_ylabel("Dominant Eigenvalue Fraction")
+            axis.set_ylim(0, 1.05)
+
+        def draw_capacity_cdf(axis):
+            sorted_capacity = np.sort(capacities_gbps)
+            probability = np.arange(1, sorted_capacity.size + 1) / sorted_capacity.size
+            axis.plot(sorted_capacity, probability, color=theme["series"]["capacity"], linewidth=1.6)
+            axis.set_ylabel("Cumulative Probability")
+            axis.set_ylim(0.0, 1.02)
+            for level, line_style in ((0.1, "--"), (0.5, ":")):
+                outage = float(np.quantile(sorted_capacity, level))
+                axis.axvline(
+                    outage,
+                    color=theme["series"]["reference"],
+                    linestyle=line_style,
+                    linewidth=1.0,
+                    label=f"{int(level * 100)}% outage = {outage:.3f} Gbps",
+                )
+            axis.legend(fontsize=7, loc="lower right")
+
+        def draw_delay_spread(axis):
+            axis.plot(
+                scenario_time,
+                delay_spread_ns,
+                color=theme["series"]["capacity"],
+                linewidth=1.4,
+                label="RMS Delay Spread",
+            )
+            axis.set_ylabel("RMS Delay Spread (ns)")
+            axis.set_ylim(bottom=0.0)
+            bandwidth_axis = axis.twinx()
+            bandwidth_color = theme["series"]["condition"]
+            bandwidth_axis.plot(
+                scenario_time,
+                coherence_bandwidth_khz,
+                color=bandwidth_color,
+                linewidth=1.4,
+                label="Coherence Bandwidth",
+            )
+            bandwidth_axis.axhline(
+                subcarrier_spacing_khz,
+                color=theme["series"]["reference"],
+                linestyle="--",
+                linewidth=1.0,
+                label=f"Subcarrier Spacing ({subcarrier_spacing_khz:.0f} kHz)",
+            )
+            bandwidth_axis.set_ylabel("Coherence Bandwidth (kHz)", color=bandwidth_color)
+            bandwidth_axis.tick_params(axis="y", colors=bandwidth_color)
+            handles, labels = axis.get_legend_handles_labels()
+            extra_handles, extra_labels = bandwidth_axis.get_legend_handles_labels()
+            axis.legend(handles + extra_handles, labels + extra_labels, fontsize=7, loc="upper right")
+
+        def draw_coherence_time(axis):
+            axis.plot(
+                scenario_time,
+                temporal_correlation,
+                color=theme["series"]["capacity"],
+                linewidth=1.4,
+                label="Adjacent-Sounding Correlation",
+            )
+            axis.set_ylabel("Correlation Magnitude")
+            axis.set_ylim(0.0, 1.02)
+            time_axis = axis.twinx()
+            time_color = theme["series"]["rank"]
+            time_axis.plot(
+                scenario_time,
+                coherence_time_ms,
+                color=time_color,
+                linewidth=1.8,
+                label="Coherence Time",
+            )
+            time_axis.set_ylabel("Coherence Time (ms)", color=time_color)
+            time_axis.tick_params(axis="y", colors=time_color)
+            finite_times = coherence_time_ms[np.isfinite(coherence_time_ms)]
+            if finite_times.size and np.all(finite_times > 0):
+                time_axis.set_yscale("log")
+            handles, labels = axis.get_legend_handles_labels()
+            extra_handles, extra_labels = time_axis.get_legend_handles_labels()
+            axis.legend(handles + extra_handles, labels + extra_labels, fontsize=7, loc="upper right")
+
+        time_label = "Scenario Time (s)"
         metric_plots = [
+            ("capacity", "MIMO OFDM Capacity over Scenario Time", time_label, draw_capacity),
             (
-                "capacity",
-                "MIMO OFDM Capacity over Scenario Time",
-                "Capacity (Gbps)",
-                capacities_gbps,
-                "#1976d2",
-                None,
-                False,
+                "eigenvalue_spectrum",
+                "Eigenvalue Spectrum and Effective Rank over Scenario Time",
+                time_label,
+                draw_eigenvalue_spectrum,
             ),
-            (
-                "effective_rank",
-                "Effective Rank over Scenario Time",
-                "Effective Rank",
-                ranks,
-                "#2e7d32",
-                (0, max_rank + 0.5),
-                False,
-            ),
-            (
-                "condition_number",
-                "Condition Number over Scenario Time",
-                "Condition Number",
-                condition_numbers,
-                "#f57c00",
-                None,
-                bool(np.all(condition_numbers > 0)),
-            ),
+        ]
+        if n_streams and self.stream_capacity_checkbox.isChecked():
+            metric_plots.append(
+                (
+                    "stream_capacity",
+                    "Per-Stream Capacity over Scenario Time",
+                    time_label,
+                    draw_stream_capacity,
+                )
+            )
+        if capacities_gbps.size and self.capacity_cdf_checkbox.isChecked():
+            metric_plots.append(
+                ("capacity_cdf", "MIMO OFDM Capacity Distribution", "Capacity (Gbps)", draw_capacity_cdf)
+            )
+        metric_plots.extend([
+            ("condition_number", "Condition Number over Scenario Time", time_label, draw_condition_number),
             (
                 "dominant_eigenvalue_fraction",
                 "Dominant Eigenvalue Fraction over Scenario Time",
-                "Dominant Eigenvalue Fraction",
-                dominant_fractions,
-                "#c62828",
-                (0, 1.05),
-                False,
+                time_label,
+                draw_dominant_fraction,
             ),
-        ]
+        ])
+        if delay_spread_ns.size and self.delay_spread_checkbox.isChecked():
+            metric_plots.append(
+                (
+                    "delay_spread",
+                    "RMS Delay Spread and Coherence Bandwidth over Scenario Time",
+                    time_label,
+                    draw_delay_spread,
+                )
+            )
+        if temporal_correlation.size and self.coherence_time_checkbox.isChecked():
+            metric_plots.append(
+                (
+                    "coherence_time",
+                    "Temporal Correlation and Coherence Time over Scenario Time",
+                    time_label,
+                    draw_coherence_time,
+                )
+            )
 
-        fig, axes = plt.subplots(4, 1, figsize=(10, 12), sharex=True, tight_layout=True)
-        for axis, (_, title, ylabel, values, color, y_limits, use_log_y) in zip(axes, metric_plots):
-            axis.plot(scenario_time, values, color=color, linewidth=1.4)
-            axis.set_title(title, fontsize=10)
-            axis.set_ylabel(ylabel)
-            if y_limits is not None:
-                axis.set_ylim(*y_limits)
-            if use_log_y:
-                axis.set_yscale("log")
+        fig, axes = plt.subplots(
+            len(metric_plots),
+            1,
+            figsize=(10, 3.2 * len(metric_plots)),
+            tight_layout=True,
+        )
+        for axis, (_, title, xlabel, draw) in zip(np.atleast_1d(axes), metric_plots):
+            draw(axis)
+            axis.set_title(f"{title}\n{link_label}", fontsize=10)
+            axis.set_xlabel(xlabel)
             axis.grid(True, alpha=0.35)
-        axes[-1].set_xlabel("Scenario Time (s)")
 
         buffer = io.BytesIO()
         fig.savefig(buffer, format="png", dpi=110)
@@ -1054,32 +1484,30 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         self._capacity_pixmap = pixmap
         self._update_capacity_plot_pixmap()
 
-        for name, title, ylabel, values, color, y_limits, use_log_y in metric_plots:
-            png_path = OUTPUT_DIR / f"mimo_{name}_{safe_link}.png"
-            single_fig, single_axis = plt.subplots(figsize=(9, 3.8), tight_layout=True)
-            single_axis.plot(scenario_time, values, color=color, linewidth=1.5)
-            single_axis.set_title(title, fontsize=11)
-            single_axis.set_xlabel("Scenario Time (s)")
-            single_axis.set_ylabel(ylabel)
-            if y_limits is not None:
-                single_axis.set_ylim(*y_limits)
-            if use_log_y:
-                single_axis.set_yscale("log")
-            single_axis.grid(True, alpha=0.4)
-            single_fig.savefig(png_path, format="png", dpi=150)
-            plt.close(single_fig)
-            self.status_log.append(f"Plot saved: {png_path}")
+        theme["streams"] = _stream_palette(LIGHT_STREAM_COLORS, n_streams)
+        theme["series"] = LIGHT_SERIES_COLORS
+        with plt.style.context("default"):
+            for name, title, xlabel, draw in metric_plots:
+                png_path = OUTPUT_DIR / f"mimo_{name}_{safe_link}.png"
+                single_fig, single_axis = plt.subplots(figsize=(9, 3.8), tight_layout=True)
+                draw(single_axis)
+                single_axis.set_title(f"{title}\n{link_label}", fontsize=11)
+                single_axis.set_xlabel(xlabel)
+                single_axis.grid(True, alpha=0.4)
+                single_fig.savefig(png_path, format="png", dpi=150)
+                plt.close(single_fig)
+                self.status_log.append(f"Plot saved: {png_path}")
 
     def _update_capacity_plot_pixmap(self):
-        """Rescale the stored capacity plot to fill the current tab canvas size."""
+        """Fit the stored capacity plot to the viewport width and let the scroll area handle height."""
         if self._capacity_pixmap is None:
             return
-        target_size = self.capacity_plot_label.size()
-        if target_size.width() <= 0 or target_size.height() <= 0:
+        target_width = self._capacity_scroll.viewport().width()
+        if target_width <= 0:
             return
-        self.capacity_plot_label.setPixmap(
-            self._capacity_pixmap.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        )
+        scaled = self._capacity_pixmap.scaledToWidth(target_width, Qt.SmoothTransformation)
+        self.capacity_plot_label.setPixmap(scaled)
+        self.capacity_plot_label.setFixedHeight(scaled.height())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

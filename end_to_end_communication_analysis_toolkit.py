@@ -16,7 +16,6 @@ import time as tyme
 import webbrowser
 from pathlib import Path
 
-import h5py
 import matplotlib
 import numpy as np
 from PIL import Image, ImageSequence
@@ -49,6 +48,7 @@ from PySide6.QtWidgets import (
 )
 from scipy.signal import lfilter, upfirdn
 
+from toolkit_lib.channel_sources import create_channel_source
 from toolkit_lib.qam_end_to_end import QAMEndToEndSystem
 
 matplotlib.use("Agg")
@@ -283,6 +283,31 @@ def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg)
     return h, symbols, rx_symbols, ber, ber_theory, snr_for_theory_db, peak_snr_db, effective_snr_db, evm_pct, rx_passband
 
 
+def _rx_rf_power_spectrum(rx_passband, sample_rate_hz, carrier_hz):
+    """Return physical RF frequencies and window-corrected power per FFT bin."""
+    sample_count = len(rx_passband)
+    if sample_count < 2:
+        raise ValueError("At least two received samples are required for an RF spectrum.")
+
+    sample_times_s = np.arange(sample_count) / sample_rate_hz
+    complex_envelope = rx_passband * np.exp(
+        -1j * 2.0 * np.pi * carrier_hz * sample_times_s
+    )
+    window = np.hamming(sample_count)
+    spectrum = np.fft.fftshift(np.fft.fft(complex_envelope * window))
+    frequencies_hz = (
+        np.fft.fftshift(np.fft.fftfreq(sample_count, d=1.0 / sample_rate_hz))
+        + carrier_hz
+    )
+
+    window_power = max(float(np.sum(window**2)), 1e-30)
+    power_per_bin_w = (np.abs(spectrum) ** 2) / (
+        window_power * sample_count
+    )
+    resolution_bandwidth_hz = sample_rate_hz / sample_count
+    return frequencies_hz, power_per_bin_w, resolution_bandwidth_hz
+
+
 class RSTImportWorker(QThread):
     """Background thread for imported RST/RSP file analysis."""
 
@@ -298,6 +323,7 @@ class RSTImportWorker(QThread):
         self.file_path = file_path
         self.params = params
         self.is_running = True
+        self._source = None
 
     def run(self):
         try:
@@ -306,6 +332,10 @@ class RSTImportWorker(QThread):
         except Exception as exc:
             self.progress_update.emit(0, f"ERROR: {exc}")
             self.analysis_complete.emit(False)
+        finally:
+            if self._source is not None:
+                self._source.close()
+                self._source = None
 
     def _process_file(self):
         qam_order = self.params["qam_order"]
@@ -344,34 +374,28 @@ class RSTImportWorker(QThread):
                 "rx_noise_w": 10.0 ** ((rx_noise_dbm - 30.0) / 10.0),
             }
 
+        source_type = self.params.get("source_type", "hdf5")
+        analysis_name = self.params.get("analysis_name")
         fname = os.path.basename(self.file_path)
-        self.progress_update.emit(0, f"Reading channel file: {fname} ...")
+        source_label = "STK/RFCM project" if source_type == "rfcm" else "channel file"
+        self.progress_update.emit(0, f"Opening {source_label}: {fname} ...")
 
-        with h5py.File(self.file_path, "r") as fid:
-            links = list(fid["/Links"])
-            if not links:
-                raise ValueError("No links found in file.")
-
-            selected_link = self.params.get("tx_link")
-            link = selected_link if (selected_link and selected_link in links) else links[0]
-            n_tx = int(fid[f"/Links/{link}/Transmitter"].attrs["Antenna Count"][0])
-            n_rx = int(fid[f"/Links/{link}/Receiver"].attrs["Antenna Count"][0])
-            n_p = int(fid[f"/Links/{link}/Waveform"].attrs["Channel Soundings"][0])
-            n_s = int(fid[f"/Links/{link}/Waveform"].attrs["Sample Count"][0])
-            bw = float(fid[f"/Links/{link}/Waveform"].attrs["Bandwidth"][0])
-            fc = float(fid[f"/Links/{link}/Waveform"].attrs["Frequency"][0])
-
-            time_array = fid[f"/Links/{link}/Channel Characterization/Time Array"][:]
-            response_data = fid[f"/Links/{link}/Channel Characterization/Response"][:]
+        source = create_channel_source(self.file_path, source_type, analysis_name)
+        self._source = source
+        link = source.resolve(self.params.get("tx_link"))
+        metadata = source.link_metadata(link)
+        n_tx = metadata.n_tx
+        n_rx = metadata.n_rx
+        n_p = metadata.n_soundings
+        n_s = metadata.n_frequency_samples
+        bw = metadata.bandwidth_hz
+        fc = metadata.center_frequency_hz
+        time_samples = metadata.n_frames
 
         tx_index = int(self.params.get("tx_index", 0))
         rx_index = int(self.params.get("rx_index", 0))
         tx_index = max(0, min(tx_index, n_tx - 1))
         rx_index = max(0, min(rx_index, n_rx - 1))
-
-        response_data = response_data[:, 0::2] + 1j * response_data[:, 1::2]
-        time_samples = len(time_array[0])
-        response_data = response_data.reshape(time_samples, n_tx, n_rx, n_p, n_s)
 
         freq_domain = np.linspace(fc - bw / 2.0, fc + bw / 2.0, n_s)
         freq_mhz = freq_domain / 1e6
@@ -420,12 +444,13 @@ class RSTImportWorker(QThread):
             f"Processing {time_samples} frames for Tx{tx_index + 1}-Rx{rx_index + 1} and generating GIF ...",
         )
 
-        for i_frame in range(time_samples):
+        for sounding in source.iterate_soundings(link, first_only=True):
             if not self.is_running:
                 break
 
             tic = tyme.perf_counter()
-            channel_response = response_data[i_frame, tx_index, rx_index, 0, :]
+            i_frame = sounding.frame_index - 1
+            channel_response = sounding.channel[tx_index, rx_index]
             current_fc_hz = hopping_freqs_hz[i_frame % len(hopping_freqs_hz)] if hopping_enabled else fc
             hop_idx = (i_frame % len(hopping_freqs_hz)) + 1 if hopping_enabled else 1
             hop_total = len(hopping_freqs_hz) if hopping_enabled else 1
@@ -502,33 +527,31 @@ class RSTImportWorker(QThread):
                     )
 
                 elif panel_name == "rx_rf_spectrum":
-                    n_rf = len(rx_passband)
-                    win = np.hamming(n_rf)
-                    spec = np.fft.fftshift(np.fft.fft(rx_passband * win))
-                    # Keep displayed spectrum limits fixed to imported RSP center/bandwidth,
-                    # but map FFT bins using the active carrier for correct center placement.
                     f_start_hz = fc - (bw / 2.0)
                     f_stop_hz = fc + (bw / 2.0)
-                    f_rf = np.fft.fftshift(np.fft.fftfreq(n_rf, d=1.0 / qam_system.fs)) + current_fc_hz
-                    # Power spectrum per FFT bin (W/bin), then convert to dBm/bin.
-                    win_power = max(float(np.sum(win**2)), 1e-30)
-                    p_bin_w = (np.abs(spec) ** 2) / (win_power * max(n_rf, 1))
-                    rbw_hz = qam_system.fs / max(n_rf, 1)
+                    f_rf, p_bin_w, rbw_hz = _rx_rf_power_spectrum(
+                        rx_passband,
+                        qam_system.fs,
+                        current_fc_hz,
+                    )
                     occ_start_hz = current_fc_hz - (qam_system.fs / 2.0)
                     occ_stop_hz = current_fc_hz + (qam_system.fs / 2.0)
 
-                    n_rsp = max(int(n_s), 2)
-                    f_rsp = np.linspace(f_start_hz, f_stop_hz, n_rsp)
-                    # Interpolate signal power across full RSP bandwidth without adding synthetic broadband noise.
-                    signal_rsp_w = np.interp(f_rsp, f_rf, p_bin_w, left=0.0, right=0.0)
-                    spec_dbm = 10.0 * np.log10(np.maximum(signal_rsp_w, 1e-30) * 1e3)
+                    displayed = (f_rf >= f_start_hz) & (f_rf <= f_stop_hz)
+                    displayed_freqs_hz = f_rf[displayed]
+                    displayed_power_w = p_bin_w[displayed]
+                    spec_dbm = 10.0 * np.log10(
+                        np.maximum(displayed_power_w, 1e-30) * 1e3
+                    )
                     ax.plot(
-                        f_rsp / 1e6,
+                        displayed_freqs_hz / 1e6,
                         spec_dbm,
                         color="#1976d2",
                         linewidth=1.1,
                     )
-                    p_total_dbm = 10.0 * np.log10(np.maximum(np.sum(signal_rsp_w), 1e-30) * 1e3)
+                    p_total_dbm = 10.0 * np.log10(
+                        np.maximum(np.sum(displayed_power_w), 1e-30) * 1e3
+                    )
 
                     if noise_mode == "power_noise":
                         title_suffix = f"Tx={tx_power_dbm:.1f} dBm | Noise={rx_noise_dbm:.1f} dBm"
@@ -597,6 +620,9 @@ class RSTImportWorker(QThread):
                 ),
             )
             self.ber_update.emit(ber, ber_theory, avg_ber, peak_snr_db, effective_snr_db, evm_pct)
+
+        source.close()
+        self._source = None
 
         if gif_frames:
             gif_path = str(OUTPUT_DIR / f"comm_analysis_{qam_order}qam.gif")
@@ -794,8 +820,14 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         return container
 
     def _build_file_group(self):
-        self.file_group = QGroupBox("RST File Import")
+        self.file_group = QGroupBox("Channel Source")
         layout = QVBoxLayout()
+
+        self.source_mode_combo = QComboBox()
+        self.source_mode_combo.addItem("HDF5 Archive (RST/RSP)", "hdf5")
+        self.source_mode_combo.addItem("STK/RFCM Project (VDF/SC)", "rfcm")
+        self.source_mode_combo.currentIndexChanged.connect(self._on_source_mode_changed)
+        layout.addWidget(self.source_mode_combo)
 
         row = QHBoxLayout()
         self.file_path_edit = QLineEdit()
@@ -806,6 +838,14 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         row.addWidget(self.file_path_edit, 1)
         row.addWidget(self.btn_browse)
         layout.addLayout(row)
+
+        self.analysis_combo = QComboBox()
+        self.analysis_combo.addItem("(load an RFCM project)", None)
+        self.analysis_combo.setEnabled(False)
+        self.analysis_combo.setToolTip(
+            "Select an RFCM analysis configuration; available links update automatically"
+        )
+        self.analysis_combo.currentIndexChanged.connect(self._on_analysis_changed)
 
         self.btn_load_metadata = QPushButton("Load Metadata")
         self.btn_load_metadata.setEnabled(False)
@@ -939,6 +979,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.taps_spinbox.setSingleStep(50)
 
         # Reordered fields requested by user.
+        form.addRow("RFCM Analysis:", self.analysis_combo)
         form.addRow("Link:", self.link_combo)
         form.addRow("Transmitter Antenna:", self.tx_combo)
         form.addRow("Receiver Antenna:", self.rx_combo)
@@ -1061,14 +1102,14 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.bw_spinbox.setValue(lm["bw_MHz"])
         self.tx_combo.clear()
         for i in range(lm["nTx"]):
-            label = f"Tx_{i + 1}"
+            label = f"{lm.get('tx_name', 'Tx')} [{i + 1}]"
             self.tx_combo.addItem(label, i)
             self.tx_combo.setItemData(self.tx_combo.count() - 1, label, Qt.ToolTipRole)
         self.tx_combo.setCurrentIndex(0)
         self.tx_combo.setToolTip(self.tx_combo.currentText())
         self.rx_combo.clear()
         for i in range(lm["nRx"]):
-            label = f"Rx_{i + 1}"
+            label = f"{lm.get('rx_name', 'Rx')} [{i + 1}]"
             self.rx_combo.addItem(label, i)
             self.rx_combo.setItemData(self.rx_combo.count() - 1, label, Qt.ToolTipRole)
         self.rx_combo.setCurrentIndex(0)
@@ -1236,17 +1277,44 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self._tabs = tabs
         return tabs
 
+    def _on_source_mode_changed(self):
+        is_rfcm = self.source_mode_combo.currentData() == "rfcm"
+        self.analysis_combo.setEnabled(is_rfcm)
+        self.file_path_edit.clear()
+        self._channel_file_path = ""
+        self._file_metadata = {}
+        self.btn_load_metadata.setEnabled(False)
+        self.analysis_combo.clear()
+        self.analysis_combo.addItem(
+            "(load an RFCM project)" if is_rfcm else "(not used for HDF5)",
+            None,
+        )
+        self.file_info_label.setText("")
+
+    def _on_analysis_changed(self):
+        if (
+            self.source_mode_combo.currentData() == "rfcm"
+            and self.analysis_combo.currentData()
+            and self._channel_file_path
+        ):
+            self._load_file_metadata()
+
     def _browse_file(self):
+        is_rfcm = self.source_mode_combo.currentData() == "rfcm"
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select RST/RSP File",
+            "Select STK/RFCM Project" if is_rfcm else "Select RST/RSP File",
             "",
-            "RST and RSP Files (*.rst *.rsp);;All Files (*.*)",
+            (
+                "STK Projects (*.vdf *.sc);;All Files (*.*)"
+                if is_rfcm
+                else "RST and RSP Files (*.rst *.rsp);;All Files (*.*)"
+            ),
         )
         if file_path:
             self._channel_file_path = file_path
             self.file_path_edit.setText(file_path)
-            self.file_info_label.setText("File selected. Click Load Metadata to read parameters.")
+            self.file_info_label.setText("Source selected. Click Load Metadata to inspect it.")
             self.btn_load_metadata.setEnabled(True)
 
     def _load_file_metadata(self):
@@ -1254,35 +1322,55 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             QMessageBox.warning(self, "File Error", "Selected file was not found.")
             return
 
+        source_type = self.source_mode_combo.currentData()
+        selected_analysis = self.analysis_combo.currentData() if source_type == "rfcm" else None
         try:
             links_metadata = {}
-            with h5py.File(self._channel_file_path, "r") as fid:
-                links = list(fid["/Links"])
-                if not links:
-                    raise ValueError("No links found in file.")
+            with create_channel_source(
+                self._channel_file_path,
+                source_type,
+                selected_analysis,
+            ) as source:
+                analyses = source.list_analyses()
+                if source_type == "rfcm":
+                    valid_analyses = [item for item in analyses if item.valid]
+                    if not valid_analyses:
+                        messages = "; ".join(
+                            f"{item.name}: {item.message}" for item in analyses
+                        )
+                        raise ValueError(
+                            "No valid RFCM communications analysis was found. " + messages
+                        )
+                    available_names = [item.name for item in valid_analyses]
+                    if selected_analysis not in available_names:
+                        selected_analysis = available_names[0]
+                    source.select_analysis(selected_analysis)
+                    self.analysis_combo.blockSignals(True)
+                    self.analysis_combo.clear()
+                    for item in valid_analyses:
+                        self.analysis_combo.addItem(item.name, item.name)
+                    self.analysis_combo.setCurrentIndex(
+                        self.analysis_combo.findData(selected_analysis)
+                    )
+                    self.analysis_combo.blockSignals(False)
 
-                for lname in links:
-                    n_tx = int(fid[f"/Links/{lname}/Transmitter"].attrs["Antenna Count"][0])
-                    n_rx = int(fid[f"/Links/{lname}/Receiver"].attrs["Antenna Count"][0])
-                    n_p = int(fid[f"/Links/{lname}/Waveform"].attrs["Channel Soundings"][0])
-                    n_s = int(fid[f"/Links/{lname}/Waveform"].attrs["Sample Count"][0])
-                    i_s = float(fid[f"/Links/{lname}/Waveform"].attrs["Sounding Interval"][0])
-                    bw = float(fid[f"/Links/{lname}/Waveform"].attrs["Bandwidth"][0])
-                    fc = float(fid[f"/Links/{lname}/Waveform"].attrs["Frequency"][0])
-                    time_array = fid[f"/Links/{lname}/Channel Characterization/Time Array"][:]
-                    time_samples = len(time_array[0])
-                    tx_names = self._extract_antenna_names(fid, lname, "Transmitter", n_tx)
-                    rx_names = self._extract_antenna_names(fid, lname, "Receiver", n_rx)
+                link_infos = source.list_links()
+                links = [info.identifier for info in link_infos]
 
+                for link_info in link_infos:
+                    lname = link_info.identifier
+                    metadata = source.link_metadata(lname)
                     links_metadata[lname] = {
-                        "fc_GHz": fc / 1e9,
-                        "bw_MHz": bw / 1e6,
-                        "nTx": n_tx,
-                        "nRx": n_rx,
-                        "nP": n_p,
-                        "nS": n_s,
-                        "iS_ms": i_s * 1e3,
-                        "Tsamps": time_samples,
+                        "fc_GHz": metadata.center_frequency_hz / 1e9,
+                        "bw_MHz": metadata.bandwidth_hz / 1e6,
+                        "nTx": metadata.n_tx,
+                        "nRx": metadata.n_rx,
+                        "nP": metadata.n_soundings,
+                        "nS": metadata.n_frequency_samples,
+                        "iS_ms": metadata.sounding_interval_s * 1e3,
+                        "Tsamps": metadata.n_frames,
+                        "tx_name": metadata.transmitter_name,
+                        "rx_name": metadata.receiver_name,
                     }
 
             first_link = links[0]
@@ -1294,6 +1382,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
                 "bw_MHz": first_meta["bw_MHz"],
                 "links": links,
                 "links_metadata": links_metadata,
+                "source_type": source_type,
+                "analysis_name": selected_analysis,
             }
 
             # Populate the Link combo; suppress currentIndexChanged during batch population.
@@ -1317,7 +1407,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             for lname in links:
                 m = links_metadata[lname]
                 info_parts.append(
-                    f"<b>Link:</b> {lname} &nbsp;|&nbsp; fc={m['fc_GHz']:.4f} GHz"
+                    f"<b>Link:</b> {m['tx_name']} to {m['rx_name']} &nbsp;|&nbsp; "
+                    f"fc={m['fc_GHz']:.4f} GHz"
                     f" &nbsp;|&nbsp; BW={m['bw_MHz']:.2f} MHz &nbsp;|&nbsp;"
                     f" Tx={m['nTx']} Rx={m['nRx']} | Pulses={m['nP']} | FreqPts={m['nS']}"
                     f" | Interval={m['iS_ms']:.3f} ms | Frames={m['Tsamps']}"
@@ -1387,6 +1478,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         noise_mode = "snr" if self.radio_snr.isChecked() else "power_noise"
         rx_noise_dbm = -120.0 if noise_mode == "snr" else self.rx_noise_spinbox.value()
         return {
+            "source_type": self.source_mode_combo.currentData(),
+            "analysis_name": self.analysis_combo.currentData(),
             "qam_order": qam_order,
             "center_freq": self.freq_spinbox.value() * 1e9,
             "bandwidth": self.bw_spinbox.value() * 1e6,
@@ -1418,8 +1511,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             QMessageBox.warning(self, "Warning", "Analysis is already running.")
             return
 
-        if not self._channel_file_path:
-            QMessageBox.warning(self, "No File", "Please select an RST/RSP file first.")
+        if not self._channel_file_path or not self._file_metadata:
+            QMessageBox.warning(self, "No Source", "Select a channel source and load its metadata first.")
             return
 
         self.status_log.clear()
@@ -1520,6 +1613,10 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
                 "Constellation",
             ]
 
+        self.status_log.append(
+            f"Source: {'Live STK/RFCM' if params['source_type'] == 'rfcm' else 'HDF5 archive'}"
+            + (f" | Analysis: {params['analysis_name']}" if params.get("analysis_name") else "")
+        )
         self.status_log.append(
             f"Selected link: {self.link_combo.currentText()} | "
             f"Coupling: {self.tx_combo.currentText()} \u2192 {self.rx_combo.currentText()}"
@@ -1825,7 +1922,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
                 self.status_log.append(f"Warning: could not save epoch plot '{title}': {exc}")
 
         if hasattr(self, "_tabs"):
-            self._tabs.setCurrentIndex(1)
+            self._tabs.setCurrentIndex(2)
 
     def _render_epoch_plot(self, frames, values, title, xlabel, ylabel, use_log_y, qam_order):
         """Render a single epoch plot. Returns (QPixmap, PIL.Image) for display and GIF export."""

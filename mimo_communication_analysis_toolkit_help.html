@@ -68,13 +68,15 @@
     <div class="card">
       <h2>1) Toolkit Architecture</h2>
       <ul>
-        <li><b>Input Channel Model:</b> The toolkit imports a frequency-domain S-parameter sweep from an RST/RSP (HDF5) file. Each stored coefficient is the complex port-to-port transmission response from one transmit antenna element to one receive antenna element, over a swept frequency band, for one or more channel soundings, across a scenario time history.</li>
+        <li><b>Input Channel Model:</b> The toolkit streams a frequency-domain channel from either an RST/RSP archive or a live STK/RFCM project. Each coefficient is the complex port-to-port transmission response from one transmit antenna element to one receive antenna element.</li>
+        <li><b>Live RFCM Mode:</b> STK Engine loads a VDF/SC project, discovers valid RFCM analysis configurations and links, and returns each frequency-pulse response directly in memory without an intermediate HDF5 archive.</li>
         <li><b>Antenna Usage:</b> Every transmit antenna and every receive antenna reported for the selected link is used. There is no per-antenna selection; the full MIMO array is analyzed as a single spatial channel matrix.</li>
-        <li><b>OFDM Waveform Assumption:</b> The link is analyzed as an OFDM waveform using a user-selected 3GPP subcarrier spacing (SCS) and resource-block count. The imported frequency sweep is interpolated onto the exact OFDM subcarrier center frequencies.</li>
+        <li><b>OFDM Waveform Assumption:</b> The link is analyzed as an OFDM waveform using a user-selected 3GPP subcarrier spacing (SCS) and resource-block count. The imported frequency sweep is band-limited resampled onto the exact OFDM subcarrier center frequencies.</li>
         <li><b>Capacity Engine:</b> For every OFDM subcarrier, the complex channel matrix is assembled and its equal-power Shannon capacity is computed. Subcarrier capacities are summed across the occupied bandwidth to produce total capacity for that time sample.</li>
+        <li><b>Channel Diagnostics:</b> Alongside capacity, each sounding also yields its spatial eigenvalue spectrum, per-stream capacities, RMS delay spread, coherence bandwidth, and the temporal correlation against the previous sounding.</li>
         <li><b>Time and Sounding History:</b> Every scenario frame and every channel sounding within that frame is treated as a distinct, chronologically ordered time sample (frame-major, sounding-minor), so capacity is reported as a full time history rather than a single value.</li>
-        <li><b>Streaming for Large Files:</b> The HDF5 response dataset is read one sounding and one antenna-port path at a time and interpolated immediately onto the OFDM grid. The full response array is never loaded into memory, which allows multi-gigabyte channel files to be processed safely.</li>
-        <li><b>Optional GPU Acceleration:</b> When <b>Use GPU</b> is selected, the same batched linear-algebra operations run on a local NVIDIA GPU through CuPy instead of NumPy.</li>
+        <li><b>Streaming for Large Files:</b> The HDF5 response dataset is read one sounding and one antenna-port path at a time and resampled immediately onto the OFDM grid. The full response array is never loaded into memory, which allows multi-gigabyte channel files to be processed safely.</li>
+        <li><b>Optional GPU Acceleration:</b> When <b>Use GPU</b> is selected, the batched capacity and eigenvalue operations run on a local NVIDIA GPU through CuPy instead of NumPy. Channel reading, resampling, and the delay/Doppler metrics always run on the host.</li>
       </ul>
     </div>
 
@@ -92,7 +94,7 @@
     <div class="card">
       <h2>3) Method Used to Compute MIMO OFDM Channel Capacity</h2>
       <ol>
-        <li><b>Channel matrix per subcarrier:</b> For every active OFDM subcarrier frequency, the imported frequency sweep is linearly interpolated (independently for the real and imaginary parts) onto that exact subcarrier frequency, for every Tx&ndash;Rx antenna pair, producing <code>H<sub>k</sub></code> for subcarrier <code>k</code>.</li>
+        <li><b>Channel matrix per subcarrier:</b> For every active OFDM subcarrier frequency, the imported frequency sweep is resampled onto that exact subcarrier frequency, for every Tx&ndash;Rx antenna pair, producing <code>H<sub>k</sub></code> for subcarrier <code>k</code>. The resampling is <b>band-limited</b>: the imported channel frequency response is transformed to the delay domain with an inverse DFT and then evaluated back at the requested subcarrier frequencies. This preserves the channel's multipath delay structure, which component-wise linear interpolation of the real and imaginary parts would smear.</li>
         <li><b>Equal-power allocation:</b> The user-specified total transmit power is divided equally across every active subcarrier and, on each subcarrier, equally across every transmit antenna port. This mirrors a realistic scheduler baseline rather than an idealized water-filling allocation.</li>
         <li><b>Per-subcarrier capacity:</b> Using the Shannon/Telatar MIMO capacity expression,
           <p style="text-align:center;">
@@ -107,8 +109,10 @@
           where <code>&Delta;f</code> is the selected subcarrier spacing and the sum runs over every active subcarrier in the configured resource-block allocation.
         </li>
         <li><b>Batched, memory-bounded evaluation:</b> Subcarriers are processed in fixed-size batches so that only a small Gram matrix set is held in memory at any time, using whichever of <code>H H<sup>H</sup></code> or <code>H<sup>H</sup> H</code> is smaller (an 8&times;32 uplink, for example, always forms the 8&times;8 Gram matrix rather than 32&times;32).</li>
-        <li><b>Spatial diagnostics per subcarrier:</b> The eigenvalues of the smaller Gram matrix are also used to compute the effective rank, condition number, and dominant eigenvalue fraction described in Section 5, and these are averaged across all active subcarriers for that time sample.</li>
-        <li><b>Repeat over time:</b> Steps 1&ndash;6 are repeated for every scenario frame and every channel sounding inside that frame, in chronological order, to build the full capacity and spatial-diagnostic time history.</li>
+        <li><b>Spatial diagnostics per subcarrier:</b> The eigenvalues of the smaller Gram matrix are also used to compute the eigenvalue spectrum, per-stream capacity, effective rank, condition number, and dominant eigenvalue fraction described in Section 8, and these are averaged across all active subcarriers for that time sample.</li>
+        <li><b>Per-stream capacity:</b> Because <code>det(I + &gamma; G) = &prod;<sub>i</sub> (1 + &gamma; &lambda;<sub>i</sub>)</code>, the total capacity decomposes exactly into one term per spatial eigenmode, <code>C<sub>i</sub> = &Delta;f &sum;<sub>k</sub> log<sub>2</sub>(1 + &gamma;<sub>k</sub> &lambda;<sub>i,k</sub>)</code>. These per-stream capacities always sum to the reported total capacity.</li>
+        <li><b>Delay and Doppler metrics:</b> The resampled channel is transformed to the delay domain to form a port-averaged power delay profile, from which the RMS delay spread and coherence bandwidth are derived. The channel matrix is also correlated against the previous sounding to obtain the temporal correlation and the implied coherence time.</li>
+        <li><b>Repeat over time:</b> Steps 1&ndash;8 are repeated for every scenario frame and every channel sounding inside that frame, in chronological order, to build the full capacity and channel-diagnostic time history.</li>
       </ol>
       <div class="note">
         <b>Note:</b> Because the imported S-parameters are treated as already including antenna gain and coupling effects from the input port of each transmit antenna to the output port of each receive antenna, no separate antenna-pattern or path-loss correction is applied. Capacity is computed directly at the RF reference ports represented in the imported file.
@@ -134,6 +138,12 @@
     </div>
 
     <div class="card">
+      <h2>Live STK / RFCM Project Mode</h2>
+      <p>Select <b>STK/RFCM Project (VDF/SC)</b>, browse to the project, and click <b>Load Metadata</b>. The <b>RFCM Analysis</b> list appears immediately before <b>Link</b>. Selecting an analysis automatically reconstructs and repopulates its links. Every Tx/Rx antenna coupling and sounding returned by the selected link is passed into the same OFDM capacity pipeline used for archive data.</p>
+      <p>This mode requires STK 13.1, STK Engine and RF Channel Modeler licenses, and the bundled <code>agi_stk13</code> Python wheel. RFCM runs in an isolated broker process to satisfy STK's one-Engine-instance-per-Python-process restriction. A bounded two-frame buffer lets RFCM compute upcoming frames while the toolkit post-processes the current frame; generation pauses only when the buffer is full. Stopping the worker terminates the constructed RFCM analysis during cleanup.</p>
+    </div>
+
+    <div class="card">
       <h2>5) User Inputs - Technical Meaning and Theory</h2>
       <table>
         <thead>
@@ -152,18 +162,38 @@
     </div>
 
     <div class="card">
-      <h2>6) Capacity Summary (Status and KPI Tab)</h2>
+      <h2>6) Optional Plots</h2>
+      <p>The <b>Optional Plots</b> group on the left panel controls which diagnostic panels are added to the Capacity Time History output. All four are enabled by default. The capacity, eigenvalue spectrum, condition number, and dominant eigenvalue fraction panels are always produced. Toggles are read when the plots are rendered, so changing them requires re-running the analysis.</p>
+      <table>
+        <thead>
+          <tr><th>Toggle</th><th>Adds</th><th>Why You Would Use It</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Per-Stream Capacity</td><td>One curve per spatial eigenmode showing the capacity that mode carries.</td><td>Shows how many RF chains are actually earning their keep, and what a rank-limited receiver would achieve.</td></tr>
+          <tr><td>Capacity CDF (Outage Capacity)</td><td>The empirical distribution of capacity across all soundings, with 10% and 50% outage markers.</td><td>Links are sized on outage capacity rather than mean capacity; this is the design number for a target availability.</td></tr>
+          <tr><td>Delay Spread and Coherence Bandwidth</td><td>RMS delay spread and the implied coherence bandwidth, against the configured subcarrier spacing.</td><td>Validates the OFDM numerology: subcarrier spacing and cyclic prefix must suit the channel's delay dispersion.</td></tr>
+          <tr><td>Temporal Correlation and Coherence Time</td><td>Correlation between consecutive soundings and the coherence time it implies.</td><td>Sets the required CSI feedback rate, pilot density, and precoder update rate for a mobile link.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>7) Capacity Summary (Status and KPI Tab)</h2>
       <ul>
         <li><b>Mean Capacity:</b> Average of the total OFDM capacity (<code>C(t)</code>, converted to Gbps) across every processed time sample in the scenario.</li>
         <li><b>Peak Capacity:</b> The single highest instantaneous capacity observed across the scenario time history, typically corresponding to a time sample with strong, well-conditioned multipath coupling.</li>
         <li><b>Mean Spectral Efficiency:</b> Average, across time, of the per-subcarrier spectral efficiency (bits/s/Hz per subcarrier) averaged over the OFDM band. Multiplying this by the occupied bandwidth reproduces the total capacity.</li>
-        <li><b>Mean Effective Rank:</b> Average, across time, of the entropy-based effective rank described in Section 7. This indicates how many spatial modes are typically usable, not merely how many are mathematically nonzero.</li>
+        <li><b>Mean Effective Rank:</b> Average, across time, of the entropy-based effective rank described in Section 8. This indicates how many spatial modes are typically usable, not merely how many are mathematically nonzero.</li>
       </ul>
     </div>
 
     <div class="card">
-      <h2>7) Output Plots and Files (Capacity Time History Tab)</h2>
-      <p>After analysis completes, four time-history plots are displayed together and are also saved individually as PNG files in the local <code>output/</code> folder, named <code>mimo_&lt;metric&gt;_&lt;link&gt;.png</code>. A companion CSV file, <code>mimo_capacity_&lt;link&gt;.csv</code>, records every time sample with its frame index, sounding index, and all metrics below.</p>
+      <h2>8) Output Plots and Files (Capacity Time History Tab)</h2>
+      <p>After analysis completes, the selected time-history plots are stacked into a single scrollable view on the <b>Capacity Time History</b> tab, scaled to the tab width so each panel stays readable. Every panel is also saved individually as a PNG file in the local <code>output/</code> folder, named <code>mimo_&lt;metric&gt;_&lt;link&gt;.png</code>. A companion CSV file, <code>mimo_capacity_&lt;link&gt;.csv</code>, records every time sample with its frame index, sounding index, and all scalar metrics below.</p>
+      <p>Every plot title carries a second line naming the link as <code>&lt;Transmitter&gt; to &lt;Receiver&gt;</code>, read from the node names in the imported file (falling back to the raw link name if the file carries none).</p>
+      <div class="note">
+        <b>On-screen versus exported colors:</b> The in-application plots use a bright, high-contrast palette chosen to stay legible on the toolkit's dark background. The exported PNG files are rendered separately on a white background with a deeper palette, so they drop directly into reports and slides. The underlying data is identical.
+      </div>
       <table>
         <thead>
           <tr><th>Plot / Column</th><th>What It Represents</th><th>How to Interpret</th></tr>
@@ -172,25 +202,44 @@
           <tr>
             <td>Capacity (<code>capacity_bps</code>)</td>
             <td>Total instantaneous OFDM channel capacity at that time sample, computed as described in Section 3.</td>
-            <td>Higher values indicate a stronger, better-conditioned MIMO channel at the configured Tx power, noise figure, and OFDM bandwidth. Drops often align with reduced dominant eigenvalue fraction or lower effective rank, but can also simply reflect lower received signal power.</td>
+            <td>Higher values indicate a stronger, better-conditioned MIMO channel at the configured Tx power, noise figure, and OFDM bandwidth. Drops often align with reduced dominant eigenvalue fraction or lower effective rank, but can also simply reflect lower received signal power. The y-axis always starts at zero so that relative variation is not visually exaggerated.</td>
           </tr>
           <tr>
-            <td>Effective Rank (<code>effective_rank</code>)</td>
-            <td>Entropy-based spatial rank,
-              <code>r<sub>eff</sub> = exp( -&sum;<sub>i</sub> p<sub>i</sub> ln p<sub>i</sub> )</code>,
-              where <code>p<sub>i</sub> = &lambda;<sub>i</sub> / &sum;<sub>j</sub> &lambda;<sub>j</sub></code> are the normalized eigenvalues of the channel Gram matrix, averaged over all active subcarriers.
-            </td>
-            <td>This measures how evenly the channel's spatial energy is distributed among independent modes, not merely how many singular values are nonzero. A value near the maximum possible (<code>min(N<sub>t</sub>, N<sub>r</sub>)</code>) means spatial energy is spread across many equally strong modes; a value near 1 means one mode dominates. It is scale-invariant: several equally weak modes can still report a high effective rank even when absolute capacity is low, so effective rank should be read together with the capacity plot, not in isolation.</td>
+            <td>Eigenvalue Spectrum and Effective Rank</td>
+            <td>Every eigenvalue of the channel Gram matrix, in dB, plotted as its own colored curve against scenario time, with the entropy-based effective rank
+              <code>r<sub>eff</sub> = exp( -&sum;<sub>i</sub> p<sub>i</sub> ln p<sub>i</sub> )</code>
+              overlaid as a thicker red curve on a separate right-hand axis. Here <code>p<sub>i</sub> = &lambda;<sub>i</sub> / &sum;<sub>j</sub> &lambda;<sub>j</sub></code>, and all values are averaged over the active subcarriers.</td>
+            <td>The eigenvalue curves show both the absolute strength of each spatial mode and the spread between them; a wide vertical gap between the top and bottom curves means the weaker modes are not usable. Effective rank condenses that spread into a single number: near <code>min(N<sub>t</sub>, N<sub>r</sub>)</code> means energy is spread across many comparable modes, near 1 means one mode dominates. Effective rank is scale-invariant, so several equally weak modes still report a high value &mdash; read it together with the eigenvalue levels and the capacity plot, not in isolation.</td>
+          </tr>
+          <tr>
+            <td>Per-Stream Capacity (optional)</td>
+            <td>The capacity carried by each spatial eigenmode, strongest first, in Gbps.</td>
+            <td>The curves sum exactly to the total capacity. A cumulative reading tells you what a receiver limited to one, two, or three streams would achieve, which directly informs how many RF chains the radio needs. Streams that hug zero throughout the scenario are contributing nothing and represent hardware that could be removed.</td>
+          </tr>
+          <tr>
+            <td>Capacity CDF (optional)</td>
+            <td>Empirical cumulative distribution of total capacity over every processed sounding, with dashed markers at the 10% and 50% outage points.</td>
+            <td>Read the 10% marker as the capacity the link meets or exceeds 90% of the time &mdash; this is normally the number a link budget should be built on. A steep curve means a stable link; a long lower tail means occasional deep fades that a fixed-rate service would not survive without margin.</td>
           </tr>
           <tr>
             <td>Condition Number (<code>condition_number</code>)</td>
             <td>Ratio of the largest to the smallest singular value of the channel matrix (via the square root of the largest-to-smallest Gram-matrix eigenvalue ratio), averaged over all active subcarriers.</td>
-            <td>A condition number near 1 indicates a well-balanced, orthogonal-like channel that is favorable for spatial multiplexing. A large condition number indicates that one or more spatial modes are much weaker than the strongest mode, which limits achievable multiplexing gain even if the channel is not fully rank-deficient. This plot uses a logarithmic y-axis when all values are positive because condition number can span several orders of magnitude.</td>
+            <td>A condition number near 1 indicates a well-balanced, orthogonal-like channel that is favorable for spatial multiplexing. A large condition number indicates that one or more spatial modes are much weaker than the strongest mode, which limits achievable multiplexing gain even if the channel is not fully rank-deficient. This plot uses a logarithmic y-axis when all values are positive because condition number can span several orders of magnitude, and a dashed reference line at 1 (the ideal, fully orthogonal channel) is always kept visible for scale.</td>
           </tr>
           <tr>
             <td>Dominant Eigenvalue Fraction (<code>dominant_eigenvalue_fraction</code>)</td>
             <td><code>p<sub>max</sub> = &lambda;<sub>max</sub> / &sum;<sub>i</sub> &lambda;<sub>i</sub></code>, the fraction of total channel energy carried by the single strongest spatial eigenmode, averaged over all active subcarriers.</td>
             <td>Values close to 1 mean the link is effectively behaving like a single dominant path (for example, a strong line-of-sight or a single strong specular reflection), so most capacity gain would need to come from a higher-order modulation or more power rather than spatial multiplexing. Lower values indicate that channel energy is shared among multiple modes, which is favorable for MIMO spatial multiplexing.</td>
+          </tr>
+          <tr>
+            <td>RMS Delay Spread and Coherence Bandwidth (optional)<br>(<code>rms_delay_spread_s</code>, <code>coherence_bandwidth_hz</code>)</td>
+            <td>The second central moment of the port-averaged power delay profile, <code>&sigma;<sub>&tau;</sub></code>, and the coherence bandwidth it implies under the usual flat-fading rule of thumb, <code>B<sub>c</sub> &asymp; 1 / (5 &sigma;<sub>&tau;</sub>)</code>. A dashed reference line marks the configured subcarrier spacing.</td>
+            <td>Each subcarrier only experiences flat fading if the coherence bandwidth comfortably exceeds the subcarrier spacing. When the coherence bandwidth curve approaches or falls below the dashed reference line, the numerology is too coarse for the channel's delay dispersion and a wider subcarrier spacing is warranted. Delay spread also bounds the required cyclic prefix: a CP shorter than the channel's delay extent causes inter-symbol interference that this capacity model does not represent.</td>
+          </tr>
+          <tr>
+            <td>Temporal Correlation and Coherence Time (optional)<br>(<code>adjacent_sounding_correlation</code>, <code>coherence_time_s</code>)</td>
+            <td>The normalized magnitude correlation between the channel matrix of this sounding and the previous one, and the coherence time implied by fitting an exponential decay to that single lag, <code>T<sub>c</sub> = -&Delta;t / ln &rho;</code>. Coherence time is drawn on a logarithmic right-hand axis.</td>
+            <td>Low correlation or short coherence time indicates fast channel variation, which demands more frequent CSI feedback, denser pilots, and faster precoder updates; stale channel knowledge in such conditions causes real throughput to fall well below the capacity shown here. The first sounding has no predecessor, so both values are blank at the start of the scenario. Note that the shortest resolvable coherence time is set by the sounding interval in the imported file.</td>
           </tr>
           <tr>
             <td><code>time_s</code>, <code>frame_index</code>, <code>sounding_index</code></td>
