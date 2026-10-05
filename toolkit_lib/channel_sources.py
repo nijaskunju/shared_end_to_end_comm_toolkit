@@ -21,6 +21,8 @@ class LinkInfo:
     identifier: str
     transmitter_name: str
     receiver_name: str
+    transmitter_identifier: str | None = None
+    receiver_identifier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +205,17 @@ class Hdf5ChannelSource:
                     channel=channel,
                 )
 
+    def iterate_frame_bundles(self, identifiers, first_only=False):
+        iterators = [self.iterate_soundings(identifier) for identifier in identifiers]
+        for samples in zip(*iterators):
+            grouped = {}
+            for identifier, sounding in zip(identifiers, samples):
+                if first_only and sounding.sounding_index != 1:
+                    continue
+                grouped[identifier] = (sounding,)
+            if grouped:
+                yield grouped
+
 
 class _RfcmEngineSource:
     """Own an STK Engine instance inside an isolated broker process."""
@@ -337,6 +350,8 @@ class _RfcmEngineSource:
                 identifier=identifier,
                 transmitter_name=str(link.TransmitTransceiverName),
                 receiver_name=str(link.ReceiveTransceiverName),
+                transmitter_identifier=str(link.TransmitTransceiverIdentifier),
+                receiver_identifier=str(link.ReceiveTransceiverIdentifier),
             )
             for identifier, link in self._links.items()
         ]
@@ -470,6 +485,47 @@ class _RfcmEngineSource:
         for frame in self.iterate_frames(identifier, first_only):
             yield from frame
 
+    def iterate_frame_bundles(self, identifiers, first_only=False):
+        if not identifiers:
+            return
+        metadata = [self.link_metadata(identifier) for identifier in identifiers]
+        if any(item.frame_times_s != metadata[0].frame_times_s for item in metadata[1:]):
+            raise ValueError("RFCM links do not share a common analysis time grid.")
+        for frame_index, frame_time_s in enumerate(metadata[0].frame_times_s, 1):
+            bundle = {}
+            for identifier in identifiers:
+                link = self._links[identifier]
+                response = link.Compute(frame_time_s)
+                if response is None:
+                    continue
+                item = self._metadata[identifier]
+                dimensions = tuple(int(value) for value in response.DataDimensions)
+                expected = (
+                    item.n_tx,
+                    item.n_rx,
+                    item.n_soundings,
+                    item.n_frequency_samples,
+                    2,
+                )
+                if dimensions != expected:
+                    raise ValueError(f"Unexpected RFCM response dimensions {dimensions}; expected {expected}.")
+                values = np.asarray(response.Data, dtype=float).reshape(dimensions)
+                count = 1 if first_only else item.n_soundings
+                bundle[identifier] = tuple(
+                    ChannelSounding(
+                        frame_index=frame_index,
+                        sounding_index=sounding_offset + 1,
+                        time_s=frame_time_s + sounding_offset * item.sounding_interval_s,
+                        channel=(
+                            values[:, :, sounding_offset, :, 0]
+                            + 1j * values[:, :, sounding_offset, :, 1]
+                        ),
+                    )
+                    for sounding_offset in range(count)
+                )
+            if bundle:
+                yield bundle
+
 
 def _rfcm_broker(
     connection,
@@ -512,6 +568,24 @@ def _rfcm_broker(
                             frame_queue.put(
                                 ("error", f"{type(exc).__name__}: {exc}")
                             )
+                    continue
+                elif command == "start_bundle_iteration":
+                    try:
+                        connection.send(("result", None))
+                        for bundle in source.iterate_frame_bundles(*arguments):
+                            if stop_event.is_set():
+                                break
+                            while not stop_event.is_set():
+                                try:
+                                    frame_queue.put(("bundle", bundle), timeout=0.1)
+                                    break
+                                except Full:
+                                    continue
+                        if not stop_event.is_set():
+                            frame_queue.put(("done", None))
+                    except Exception as exc:
+                        if not stop_event.is_set():
+                            frame_queue.put(("error", f"{type(exc).__name__}: {exc}"))
                     continue
                 elif command == "close":
                     connection.send(("result", None))
@@ -640,6 +714,17 @@ class RfcmChannelSource:
             if status == "done":
                 return
             yield from payload
+
+    def iterate_frame_bundles(self, identifiers, first_only=False):
+        self._stop_event.clear()
+        self._request("start_bundle_iteration", identifiers, first_only)
+        while True:
+            status, payload = self._frame_queue.get()
+            if status == "error":
+                raise RuntimeError(payload)
+            if status == "done":
+                return
+            yield payload
 
 
 def create_channel_source(file_path, source_type="hdf5", analysis_name=None):

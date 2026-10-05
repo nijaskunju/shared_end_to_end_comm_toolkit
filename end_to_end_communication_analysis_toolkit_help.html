@@ -72,8 +72,8 @@
         <li><b>Live RFCM Mode:</b> STK Engine loads a VDF/SC project, discovers valid RFCM analysis configurations and links, and computes each selected link response in memory at its configured frame times. No intermediate HDF5 archive is required.</li>
         <li><b>Transmit Chain:</b> Bits -> Gray-coded M-QAM mapping -> RRC pulse shaping -> oversampled baseband -> RF upconversion at configured center frequency (or active hopping frequency).</li>
         <li><b>Propagation/Channel:</b> RF waveform is convolved with h(t), representing the selected Tx-Rx coupling path from the imported file.</li>
-        <li><b>Noise Model:</b> Either direct SNR-mode AWGN or Tx power + broadband Rx noise mode with power-consistent noise injection.</li>
-        <li><b>Receiver Chain:</b> Channel estimation + deconvolution, timing alignment, RF downconversion, matched filtering, symbol recovery, hard demapping, BER/EVM/SNR extraction.</li>
+        <li><b>Noise Model:</b> Either direct SNR-mode AWGN or physical Tx power plus thermal noise density, receiver noise figure, and selectable equivalent noise bandwidth.</li>
+        <li><b>Receiver Chain:</b> Channel estimation + deconvolution, timing alignment, RF downconversion, matched filtering, symbol recovery, hard demapping, BER/EVM/SNR/SIR/SINR extraction.</li>
         <li><b>Per-frame Analytics:</b> Frequency response, delay profile, RX RF spectrum, and constellation panels are generated and exported as animated GIF.</li>
       </ul>
     </div>
@@ -90,13 +90,13 @@
         <li><b>Noise injection:</b>
           <ul>
             <li>SNR mode: AWGN level is set by user SNR.</li>
-            <li>Power/Noise mode: transmit power scaling and broadband Rx-noise-based AWGN are applied.</li>
+            <li>Power/Noise mode: transmit power scaling and integrated thermal noise are applied. Integrated noise is $P_N=N_0B_\mathrm{eq}F$.</li>
           </ul>
         </li>
         <li><b>Channel estimation and equalization:</b> Pilot-assisted LS/Wiener estimate is used for deconvolution/equalization.</li>
         <li><b>Synchronization:</b> Cross-correlation aligns the recovered sequence to transmitted timing.</li>
         <li><b>Downconversion + matched filtering:</b> RF is shifted back to baseband and filtered with RRC before symbol sampling.</li>
-        <li><b>Decision and KPIs:</b> Symbols are demapped to bits and BER, theory BER, Peak SNR, Effective SNR, and EVM are computed.</li>
+        <li><b>Decision and KPIs:</b> Symbols are demapped to bits and BER, theory BER, physical SNR, SIR, SINR, Peak SNR, Effective SNR, and EVM are computed.</li>
       </ol>
     </div>
 
@@ -138,9 +138,12 @@
           <tr><td>SNR (dB)</td><td>AWGN ratio in SNR mode.</td><td>Controls additive noise directly. Theoretical BER comparison is based on this/derived effective SNR.</td></tr>
           <tr><td>Frequency Hopping</td><td>Enables per-frame carrier switching using user list in GHz.</td><td>When enabled, each frame uses the next hopping center frequency and wraps after the last value. Useful for robustness studies across in-band carrier offsets.</td></tr>
           <tr><td>Hopping Frequencies in GHz</td><td>Comma-separated center frequencies. Minimum 3 values required.</td><td>All entries must be strictly inside imported RSP bandwidth window around file center frequency. Out-of-range values are rejected before run.</td></tr>
-          <tr><td>Noise Input Mode</td><td>Switch between abstract SNR mode and physical power/noise mode.</td><td>Determines whether noise is model-driven by SNR or physically parameterized by Tx power and broadband Rx noise.</td></tr>
+          <tr><td>Noise Input Mode</td><td>Switch between abstract SNR mode and physical power/noise-density mode.</td><td>Determines whether noise is model-driven by SNR or computed from Tx power, thermal noise density, noise figure, and equivalent bandwidth.</td></tr>
           <tr><td>Tx Power (dBm)</td><td>Transmit power reference in power/noise mode.</td><td>Scales transmitted RF envelope. With fixed channel gain, received signal power shifts linearly in dB with Tx power.</td></tr>
-          <tr><td>Rx Broadband Noise (dBm)</td><td>Total integrated receiver noise over full analyzed bandwidth.</td><td>Noise shown in RX spectrum per-bin appears lower than broadband value by approximately 10log10(Nbins).</td></tr>
+          <tr><td>Rx Noise Density (dBm/Hz)</td><td>One-sided thermal/input-referred receiver noise spectral density. The standard room-temperature value is approximately -174 dBm/Hz.</td><td>The density is integrated over the selected equivalent noise bandwidth and increased by the receiver noise figure.</td></tr>
+          <tr><td>Receiver Noise Figure (dB)</td><td>Receiver degradation relative to an ideal thermal-noise input.</td><td>Linear noise factor is $F=10^{NF/10}$.</td></tr>
+          <tr><td>Noise Bandwidth</td><td>Bandwidth over which noise density is integrated.</td><td>Signal Bandwidth uses $R_s(1+\beta)$; RFCM Channel Bandwidth uses the imported channel bandwidth; Sample Bandwidth uses $f_s$; User Defined uses the adjacent bandwidth input.</td></tr>
+          <tr><td>User Noise Bandwidth (MHz)</td><td>Explicit equivalent noise bandwidth when User Defined is selected.</td><td>Provides a controlled receiver-noise integration bandwidth independent of the RFCM channel span.</td></tr>
           <tr><td>RRC Beta</td><td>Roll-off factor of root-raised cosine pulse shaping.</td><td>Lower beta improves spectral compactness but increases time-domain ringing/sensitivity; higher beta relaxes filtering at cost of occupied bandwidth.</td></tr>
           <tr><td>RRC Span</td><td>RRC filter duration in symbols.</td><td>Longer span better approximates ideal pulse but adds latency and computational burden.</td></tr>
           <tr><td>GIF FPS</td><td>Playback frame rate for exported animation.</td><td>Visualization-only parameter; does not affect DSP results.</td></tr>
@@ -171,8 +174,14 @@
     </div>
 
     <div class="card">
+      <h2>Interference Sources</h2>
+      <p>For a selected RFCM link, the toolkit identifies other links terminating at the same receiver. Enable any candidate in the <b>Interference Sources</b> table and select its waveform and transmit power. The desired and interfering RFCM channels are computed at the same scenario time and their complex received waveforms are summed before noise, channel estimation, equalization, and decoding.</p>
+      <p>The status panel reports physical SNR, SIR, and SINR. The constellation and BER therefore show the effect of the configured interference. The current waveform choices are QAM, CW tone, and wideband complex noise. QAM interferers use independently randomized symbols and currently inherit the intended signal's QAM order and timing settings.</p>
+    </div>
+
+    <div class="card">
       <h2>4.2) Scenario Plot (Epoch Data)</h2>
-      <p>The <b>Scenario Plot</b> section contains three optional checkboxes that control which epoch-level trend plots are generated after analysis completes. These plots are rendered in the <b>Epoch Plots</b> tab and are also saved individually as GIF files in the <code>output/</code> folder.</p>
+      <p>The <b>Scenario Plot</b> section contains optional checkboxes that control which epoch-level trend plots are generated after analysis completes. These plots are rendered in the <b>Epoch Plots</b> tab and are also saved individually as GIF files in the <code>output/</code> folder.</p>
       <table>
         <thead>
           <tr><th>Checkbox</th><th>What It Plots</th><th>Y-Axis Scale</th><th>Saved Filename Pattern</th></tr>
@@ -180,7 +189,8 @@
         <tbody>
           <tr><td>Average BER vs Frame</td><td>Cumulative running-average bit-error ratio across all processed frames. Provides a stable convergence indicator as more frames are processed.</td><td>Logarithmic (log10)</td><td><code>epoch_avg_ber_&lt;M&gt;qam.gif</code></td></tr>
           <tr><td>EVM (%) vs Frame</td><td>Per-frame RMS Error Vector Magnitude expressed as a percentage. Tracks how symbol quality varies over time as the channel evolves.</td><td>Linear</td><td><code>epoch_evm_pct_&lt;M&gt;qam.gif</code></td></tr>
-          <tr><td>Effective SNR (dB) vs Frame</td><td>Per-frame symbol-domain effective SNR derived from the gain-aligned error vector power. Shows how channel conditions translate to experienced SNR over time.</td><td>Linear</td><td><code>epoch_eff_snr_db_&lt;M&gt;qam.gif</code></td></tr>
+          <tr><td>Post-EQ SNR (dB) vs Frame</td><td>Per-frame symbol-domain SNR derived from the gain-aligned error vector power <b>after</b> channel estimation and equalization. This is distinct from the physical SINR below; it reflects whatever interference, noise, and residual ISI leaked through equalization.</td><td>Linear</td><td><code>epoch_post_eq_snr_db_&lt;M&gt;qam.gif</code></td></tr>
+          <tr><td>SINR (dB) vs Frame</td><td>Per-frame physical signal-to-interference-plus-noise ratio, measured directly from the received signal, interference, and noise powers <b>before</b> equalization.</td><td>Linear</td><td><code>epoch_sinr_db_&lt;M&gt;qam.gif</code></td></tr>
         </tbody>
       </table>
       <div class="note">
@@ -195,7 +205,7 @@
         <li><b>Theory BER:</b> Analytical QAM BER estimate under AWGN assumptions using estimated SNR.</li>
         <li><b>Average BER:</b> Running average across processed frames for stability.</li>
         <li><b>Peak SNR:</b> Peak received RF power against configured broadband noise reference.</li>
-        <li><b>Effective SNR:</b> Symbol-domain estimate derived from gain-aligned error vector power.</li>
+        <li><b>Post-EQ SNR:</b> Symbol-domain estimate derived from gain-aligned error vector power after channel estimation and equalization. It is not the same quantity as the physical SINR reported below; it reflects whatever interference/noise leaked through equalization.</li>
         <li><b>EVM (%):</b> RMS error-vector magnitude: 100 * sqrt(Perror/Psignal).</li>
       </ul>
     </div>
@@ -265,10 +275,16 @@
             <td>Low, stable EVM indicates robust symbol recovery. Spikes correspond to frames with deep fading or strong multipath. Correlate with the Channel Freq vs Power plot of the same frame to identify frequency-selective causes.</td>
           </tr>
           <tr>
-            <td>Effective SNR (dB) vs Frame</td>
-            <td>Per-frame symbol-domain SNR computed from gain-aligned error vector power: 10·log10(P_signal / P_error).</td>
-            <td>X: Frame index, Y: Effective SNR (dB).</td>
-            <td>Higher values indicate better equalization and lower symbol error rate. Troughs align with difficult channel frames. Compare with Peak SNR to assess how much equalization margin the system recovers.</td>
+            <td>Post-EQ SNR (dB) vs Frame</td>
+            <td>Per-frame symbol-domain SNR computed from gain-aligned error vector power after equalization: 10·log10(P_signal / P_error).</td>
+            <td>X: Frame index, Y: Post-EQ SNR (dB).</td>
+            <td>Higher values indicate better equalization and lower symbol error rate. Troughs align with difficult channel frames or strong interference. Compare with the physical SINR plot to see how much margin equalization recovers versus the raw channel condition.</td>
+          </tr>
+          <tr>
+            <td>SINR (dB) vs Frame</td>
+            <td>Per-frame physical signal-to-interference-plus-noise ratio measured directly from signal, interference, and noise powers before equalization.</td>
+            <td>X: Frame index, Y: SINR (dB).</td>
+            <td>Tracks the raw channel and interference condition independent of the receiver's equalization performance. A large gap versus Post-EQ SNR indicates the equalizer is substantially improving (or degrading) the effective link quality.</td>
           </tr>
         </tbody>
       </table>

@@ -41,6 +41,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QDoubleSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -164,7 +166,34 @@ def _apply_dark_theme(app):
     app.setStyleSheet(DARK_STYLESHEET)
 
 
-def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg):
+def _make_interference_waveform(qam_system, waveform, power_w, frequency_offset_hz=0.0):
+    sample_count = qam_system.num_symbols * qam_system.samples_per_symbol
+    time_s = np.arange(sample_count) * qam_system.Ts
+    if waveform == "CW Tone":
+        signal = np.exp(1j * 2.0 * np.pi * frequency_offset_hz * time_s)
+    elif waveform == "Wideband Noise":
+        signal = np.random.randn(sample_count) + 1j * np.random.randn(sample_count)
+    else:
+        bits = np.random.randint(0, 2, qam_system.num_symbols * qam_system.bits_per_symbol)
+        symbols = qam_system.bits_to_symbols(bits)
+        rrc = qam_system.rrc_filter(
+            qam_system.beta, qam_system.samples_per_symbol, qam_system.span
+        )
+        baseband = upfirdn(rrc, symbols, qam_system.samples_per_symbol)
+        time_s = np.arange(len(baseband)) * qam_system.Ts
+        signal = baseband * np.exp(1j * 2.0 * np.pi * frequency_offset_hz * time_s)
+    scale = np.sqrt(max(power_w, 1e-30) / max(float(np.mean(np.abs(signal) ** 2)), 1e-30))
+    return signal * scale
+
+
+def _qam_signal_processing(
+    qam_system,
+    freq_domain,
+    channel_response,
+    noise_cfg,
+    interference_channels=None,
+    interference_cfgs=None,
+):
     """Shared QAM pipeline used for imported file analysis."""
     ts = 1.0 / (freq_domain[-1] - freq_domain[0])
     h = qam_system.compute_fir_from_freq_response(
@@ -188,6 +217,26 @@ def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg)
     carrier = np.exp(1j * 2 * np.pi * qam_system.fc * t)
     tx_passband = tx_baseband * carrier
 
+    interference_channels = interference_channels or []
+    interference_cfgs = interference_cfgs or []
+    interference_passband = np.zeros_like(tx_passband, dtype=np.complex128)
+    for interference_channel, cfg in zip(interference_channels, interference_cfgs):
+        h_interference = qam_system.compute_fir_from_freq_response(
+            freq_domain,
+            interference_channel,
+            N_fft=qam_system.taps_num,
+            fs=1.0 / ts,
+        )
+        interference_power_w = 10.0 ** ((float(cfg.get("power_dbm", -30.0)) - 30.0) / 10.0)
+        jammer = _make_interference_waveform(
+            qam_system,
+            cfg.get("waveform", "QAM"),
+            interference_power_w,
+            float(cfg.get("frequency_offset_hz", 0.0)),
+        )
+        padded_jammer = np.pad(jammer, (0, max(len(tx_passband) - len(jammer), 0)))[: len(tx_passband)]
+        interference_passband += lfilter(h_interference, 1.0, padded_jammer)
+
     # Imported S-parameter coupling is referenced to 1 W Tx power.
     # In power/noise mode, normalize waveform to 1 W average and rescale by user Tx power.
     if noise_cfg.get("mode") == "power_noise":
@@ -197,11 +246,19 @@ def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg)
 
     delay_h = np.argmax(np.abs(h))
     tx_padded = np.pad(tx_passband, (0, 2 * delay_h), "constant")
-    rx_passband_clean = lfilter(h, 1.0, tx_padded)
+    rx_passband_signal = lfilter(h, 1.0, tx_padded)
+    rx_passband_interference = np.pad(
+        interference_passband,
+        (0, max(len(tx_padded) - len(interference_passband), 0)),
+    )[: len(tx_padded)]
+    rx_passband_clean = rx_passband_signal + rx_passband_interference
     peak_rx_power_w = float(np.max(np.abs(rx_passband_clean) ** 2))
+    signal_power_w = float(np.mean(np.abs(rx_passband_signal) ** 2))
+    interference_power_w = float(np.mean(np.abs(rx_passband_interference) ** 2))
 
     if noise_cfg.get("mode") == "power_noise":
         rx_noise_w = float(noise_cfg.get("rx_noise_w", 1e-12))
+        noise_power_w = rx_noise_w
         peak_snr_linear = peak_rx_power_w / max(rx_noise_w, 1e-30)
         peak_snr_db = 10.0 * np.log10(max(peak_snr_linear, 1e-30))
         noise = np.sqrt(max(rx_noise_w, 1e-30) / 2.0) * (
@@ -212,7 +269,7 @@ def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg)
     else:
         snr_db = float(noise_cfg.get("snr_db", 20.0))
         peak_snr_db = snr_db
-        _, rx_passband = qam_system.add_awgn(rx_passband_clean, snr_db)
+        noise_power_w, rx_passband = qam_system.add_awgn(rx_passband_clean, snr_db)
 
     np.random.seed(4)
     num_pilot = qam_system.taps_num * 4
@@ -223,7 +280,11 @@ def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg)
     y = np.convolve(pilot, h_true, mode="full")
 
     p_x = np.mean(np.abs(pilot) ** 2)
-    p_n = p_x / (10 ** (snr_db / 10))
+    estimation_snr_linear = signal_power_w / max(
+        interference_power_w + noise_power_w, 1e-30
+    )
+    estimation_snr_db = 10.0 * np.log10(max(estimation_snr_linear, 1e-30))
+    p_n = p_x / (10 ** (estimation_snr_db / 10))
     noise = np.sqrt(p_n / 2) * (np.random.randn(len(y)) + 1j * np.random.randn(len(y)))
     y_noisy = y + noise
     _, h_wiener = qam_system.channel_estimation_ls_wiener(
@@ -233,7 +294,7 @@ def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg)
         L=len(h_true),
     )
 
-    snr_db_1 = snr_db - 10 * np.log10(qam_system.samples_per_symbol)
+    snr_db_1 = estimation_snr_db - 10 * np.log10(qam_system.samples_per_symbol)
     rx_equalized = qam_system.wiener_deconvolution(rx_passband, h_wiener, snr_db_1)
     xcorr, lags = qam_system.cross_correlation(rx_equalized, tx_padded[: len(t)], normalize=False)
     lag = lags[np.argmax(xcorr)]
@@ -280,7 +341,25 @@ def _qam_signal_processing(qam_system, freq_domain, channel_response, noise_cfg)
     snr_for_theory_db = effective_snr_db if noise_cfg.get("mode") == "power_noise" else snr_db
     ber_theory = qam_system.theoretical_ber(snr_for_theory_db)
 
-    return h, symbols, rx_symbols, ber, ber_theory, snr_for_theory_db, peak_snr_db, effective_snr_db, evm_pct, rx_passband
+    noise_power_w = float(noise_cfg.get("rx_noise_w", noise_power_w))
+    snr_linear = signal_power_w / max(noise_power_w, 1e-30)
+    sir_linear = signal_power_w / max(interference_power_w, 1e-30)
+    sinr_linear = signal_power_w / max(interference_power_w + noise_power_w, 1e-30)
+    return (
+        h,
+        symbols,
+        rx_symbols,
+        ber,
+        ber_theory,
+        snr_for_theory_db,
+        peak_snr_db,
+        effective_snr_db,
+        evm_pct,
+        rx_passband,
+        10.0 * np.log10(max(snr_linear, 1e-30)),
+        10.0 * np.log10(max(sir_linear, 1e-30)),
+        10.0 * np.log10(max(sinr_linear, 1e-30)),
+    )
 
 
 def _rx_rf_power_spectrum(rx_passband, sample_rate_hz, carrier_hz):
@@ -313,7 +392,7 @@ class RSTImportWorker(QThread):
 
     progress_update = Signal(int, str)
     analysis_complete = Signal(bool)
-    ber_update = Signal(float, float, float, float, float, float)
+    ber_update = Signal(float, float, float, float, float, float, float, float, float)
     gif_ready = Signal(str)
     file_info = Signal(object)
     epoch_data_ready = Signal(object)
@@ -348,8 +427,10 @@ class RSTImportWorker(QThread):
         gif_fps = int(self.params["gif_fps"])
         noise_mode = self.params.get("noise_mode", "snr")
         tx_power_dbm = float(self.params.get("tx_power_dbm", 30.0))
-        rx_noise_dbm = float(self.params.get("rx_noise_dbm", -90.0))
+        noise_density_dbm_hz = float(self.params.get("noise_density_dbm_hz", -174.0))
+        noise_figure_db = float(self.params.get("noise_figure_db", 0.0))
         snr_input_db = float(self.params.get("snr_db", 20.0))
+        fs = symbol_rate * samples_per_sym
         hopping_enabled = bool(self.params.get("hopping_enabled", False))
         hopping_freqs_hz = [float(v) * 1e9 for v in self.params.get("hopping_freqs_ghz", [])]
         show_constellation = bool(self.params.get("plot_constellation", True))
@@ -367,15 +448,12 @@ class RSTImportWorker(QThread):
             show_channel_delay = True
 
         noise_cfg = {"mode": "snr", "snr_db": snr_input_db}
-        if noise_mode == "power_noise":
-            noise_cfg = {
-                "mode": "power_noise",
-                "tx_power_w": 10.0 ** ((tx_power_dbm - 30.0) / 10.0),
-                "rx_noise_w": 10.0 ** ((rx_noise_dbm - 30.0) / 10.0),
-            }
 
         source_type = self.params.get("source_type", "hdf5")
         analysis_name = self.params.get("analysis_name")
+        interference_cfgs = [
+            cfg for cfg in self.params.get("interference", []) if cfg.get("enabled", True)
+        ]
         fname = os.path.basename(self.file_path)
         source_label = "STK/RFCM project" if source_type == "rfcm" else "channel file"
         self.progress_update.emit(0, f"Opening {source_label}: {fname} ...")
@@ -391,6 +469,29 @@ class RSTImportWorker(QThread):
         bw = metadata.bandwidth_hz
         fc = metadata.center_frequency_hz
         time_samples = metadata.n_frames
+        if noise_mode == "power_noise":
+            noise_bandwidth_mode = self.params.get("noise_bandwidth_mode", "signal")
+            bandwidth_options = {
+                "signal": symbol_rate * (1.0 + beta),
+                "rfmc": bw,
+                "sample": fs,
+                "user": float(self.params.get("noise_bandwidth_mhz", bw / 1e6)) * 1e6,
+            }
+            noise_bandwidth_hz = bandwidth_options.get(
+                noise_bandwidth_mode, bandwidth_options["signal"]
+            )
+            noise_density_w_hz = 10.0 ** ((noise_density_dbm_hz - 30.0) / 10.0)
+            noise_figure_linear = 10.0 ** (noise_figure_db / 10.0)
+            rx_noise_w = noise_density_w_hz * noise_bandwidth_hz * noise_figure_linear
+            noise_cfg = {
+                "mode": "power_noise",
+                "tx_power_w": 10.0 ** ((tx_power_dbm - 30.0) / 10.0),
+                "rx_noise_w": rx_noise_w,
+                "noise_density_dbm_hz": noise_density_dbm_hz,
+                "noise_figure_db": noise_figure_db,
+                "noise_bandwidth_hz": noise_bandwidth_hz,
+            }
+        source_links = [link] + [cfg["link"] for cfg in interference_cfgs]
 
         tx_index = int(self.params.get("tx_index", 0))
         rx_index = int(self.params.get("rx_index", 0))
@@ -417,7 +518,6 @@ class RSTImportWorker(QThread):
             }
         )
 
-        fs = symbol_rate * samples_per_sym
         qam_system = QAMEndToEndSystem(qam_order=qam_order)
         qam_system.num_symbols = num_symbols
         qam_system.symbol_rate = symbol_rate
@@ -438,29 +538,41 @@ class RSTImportWorker(QThread):
         avg_ber_history = []
         evm_pct_history = []
         eff_snr_history = []
+        sinr_db_history = []
         required_bw_history = []
         self.progress_update.emit(
             0,
             f"Processing {time_samples} frames for Tx{tx_index + 1}-Rx{rx_index + 1} and generating GIF ...",
         )
 
-        for sounding in source.iterate_soundings(link, first_only=True):
+        for bundle in source.iterate_frame_bundles(source_links, first_only=True):
             if not self.is_running:
                 break
 
             tic = tyme.perf_counter()
+            sounding = bundle[link][0]
             i_frame = sounding.frame_index - 1
             channel_response = sounding.channel[tx_index, rx_index]
+            interference_channels = [
+                bundle[cfg["link"]][0].channel[0, rx_index]
+                for cfg in interference_cfgs
+            ]
             current_fc_hz = hopping_freqs_hz[i_frame % len(hopping_freqs_hz)] if hopping_enabled else fc
             hop_idx = (i_frame % len(hopping_freqs_hz)) + 1 if hopping_enabled else 1
             hop_total = len(hopping_freqs_hz) if hopping_enabled else 1
             qam_system.fc = current_fc_hz
 
-            h, symbols, rx_symbols, ber, ber_theory, snr_used_db, peak_snr_db, effective_snr_db, evm_pct, rx_passband = _qam_signal_processing(
+            (
+                h, symbols, rx_symbols, ber, ber_theory, snr_used_db,
+                peak_snr_db, effective_snr_db, evm_pct, rx_passband,
+                physical_snr_db, sir_db, sinr_db,
+            ) = _qam_signal_processing(
                 qam_system,
                 freq_domain,
                 channel_response,
                 noise_cfg,
+                interference_channels,
+                interference_cfgs,
             )
 
             acc_ber += ber
@@ -468,6 +580,7 @@ class RSTImportWorker(QThread):
             avg_ber_history.append(avg_ber)
             evm_pct_history.append(evm_pct)
             eff_snr_history.append(effective_snr_db)
+            sinr_db_history.append(sinr_db)
 
             spectral_efficiency = math.log2(1.0 + 10 ** (effective_snr_db / 10.0))
             required_bw_hz = data_rate_bps / spectral_efficiency if spectral_efficiency > 0 else float("inf")
@@ -512,6 +625,8 @@ class RSTImportWorker(QThread):
                         f"BER={ber:.3e}",
                         f"Theory={ber_theory:.3e}",
                         f"Avg={avg_ber:.3e}",
+                        f"SNR={physical_snr_db:.1f} dB",
+                        f"SINR={sinr_db:.1f} dB",
                         f"EVM={evm_pct:.2f}%",
                     ])
                     ax.text(
@@ -554,7 +669,10 @@ class RSTImportWorker(QThread):
                     )
 
                     if noise_mode == "power_noise":
-                        title_suffix = f"Tx={tx_power_dbm:.1f} dBm | Noise={rx_noise_dbm:.1f} dBm"
+                        title_suffix = (
+                            f"Tx={tx_power_dbm:.1f} dBm | N0={noise_density_dbm_hz:.1f} dBm/Hz | "
+                            f"Bn={noise_bandwidth_hz / 1e6:.3f} MHz"
+                        )
                         ax.text(
                             0.02,
                             0.04,
@@ -615,11 +733,15 @@ class RSTImportWorker(QThread):
                     f"Frame {i_frame + 1}/{time_samples} | Tx{tx_index + 1}-Rx{rx_index + 1} | {qam_order}-QAM | "
                     f"Fc={current_fc_hz/1e9:.4f} GHz | Hop={hop_idx}/{hop_total} | "
                     f"BER={ber:.3e} | Avg={avg_ber:.3e} | Theory={ber_theory:.3e} | "
-                    f"PeakSNR={peak_snr_db:.1f} dB | EffSNR={effective_snr_db:.1f} dB | EVM={evm_pct:.2f}% | "
+                    f"SNR={physical_snr_db:.1f} dB | SIR={sir_db:.1f} dB | SINR={sinr_db:.1f} dB | "
+                    f"PeakSNR={peak_snr_db:.1f} dB | PostEqSNR={effective_snr_db:.1f} dB | EVM={evm_pct:.2f}% | "
                     f"({toc - tic:.2f}s/frame)"
                 ),
             )
-            self.ber_update.emit(ber, ber_theory, avg_ber, peak_snr_db, effective_snr_db, evm_pct)
+            self.ber_update.emit(
+                ber, ber_theory, avg_ber, peak_snr_db, effective_snr_db, evm_pct,
+                physical_snr_db, sir_db, sinr_db,
+            )
 
         source.close()
         self._source = None
@@ -640,7 +762,8 @@ class RSTImportWorker(QThread):
         self.epoch_data_ready.emit({
             "avg_ber": avg_ber_history,
             "evm_pct": evm_pct_history,
-            "eff_snr_db": eff_snr_history,
+            "post_eq_snr_db": eff_snr_history,
+            "sinr_db": sinr_db_history,
             "required_bw_mhz": required_bw_history,
             "frames": list(range(1, len(avg_ber_history) + 1)),
             "qam_order": qam_order,
@@ -811,6 +934,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         layout.addWidget(self._build_file_group())
         layout.addWidget(self._build_param_group())
+        layout.addWidget(self._build_interference_group())
         layout.addWidget(self._build_plot_group())
         layout.addWidget(self._build_scenario_plot_group())
         layout.addWidget(self._build_run_group())
@@ -914,7 +1038,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         self.noise_mode_group = QButtonGroup(self)
         self.radio_snr = QRadioButton("Use SNR (dB)")
-        self.radio_power_noise = QRadioButton("Use Tx Power + Rx Broadband Noise")
+        self.radio_power_noise = QRadioButton("Use Tx Power + Noise Density")
         self.radio_snr.setChecked(True)
         self.noise_mode_group.addButton(self.radio_snr)
         self.noise_mode_group.addButton(self.radio_power_noise)
@@ -932,11 +1056,29 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.tx_power_spinbox.setSingleStep(1.0)
         self.tx_power_spinbox.setSuffix(" dBm")
 
-        self.rx_noise_spinbox = QDoubleSpinBox()
-        self.rx_noise_spinbox.setRange(-174, 30)
-        self.rx_noise_spinbox.setValue(-120.0)
-        self.rx_noise_spinbox.setSingleStep(1.0)
-        self.rx_noise_spinbox.setSuffix(" dBm")
+        self.noise_density_spinbox = QDoubleSpinBox()
+        self.noise_density_spinbox.setRange(-250, -50)
+        self.noise_density_spinbox.setValue(-174.0)
+        self.noise_density_spinbox.setSingleStep(1.0)
+        self.noise_density_spinbox.setSuffix(" dBm/Hz")
+
+        self.noise_figure_spinbox = QDoubleSpinBox()
+        self.noise_figure_spinbox.setRange(0.0, 50.0)
+        self.noise_figure_spinbox.setValue(0.0)
+        self.noise_figure_spinbox.setSingleStep(0.5)
+        self.noise_figure_spinbox.setSuffix(" dB")
+
+        self.noise_bandwidth_combo = QComboBox()
+        self.noise_bandwidth_combo.addItem("Signal Bandwidth", "signal")
+        self.noise_bandwidth_combo.addItem("RFCM Channel Bandwidth", "rfmc")
+        self.noise_bandwidth_combo.addItem("Sample Bandwidth", "sample")
+        self.noise_bandwidth_combo.addItem("User Defined", "user")
+
+        self.noise_bandwidth_spinbox = QDoubleSpinBox()
+        self.noise_bandwidth_spinbox.setRange(0.001, 100000.0)
+        self.noise_bandwidth_spinbox.setValue(300.0)
+        self.noise_bandwidth_spinbox.setSingleStep(1.0)
+        self.noise_bandwidth_spinbox.setSuffix(" MHz")
 
         self.beta_spinbox = QDoubleSpinBox()
         self.beta_spinbox.setRange(0.1, 1.0)
@@ -996,7 +1138,10 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         form.addRow("Hopping Frequencies in GHz:", self.hopping_freq_edit)
         form.addRow("Noise Input Mode:", noise_mode_widget)
         form.addRow("Tx Power:", self.tx_power_spinbox)
-        form.addRow("Rx Broadband Noise:", self.rx_noise_spinbox)
+        form.addRow("Rx Noise Density:", self.noise_density_spinbox)
+        form.addRow("Receiver Noise Figure:", self.noise_figure_spinbox)
+        form.addRow("Noise Bandwidth:", self.noise_bandwidth_combo)
+        form.addRow("User Noise Bandwidth:", self.noise_bandwidth_spinbox)
 
         # Keep existing advanced input used by the processing chain.
         form.addRow("Channel Taps:", self.taps_spinbox)
@@ -1014,6 +1159,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.data_rate_spinbox.valueChanged.connect(self._update_bw_estimate)
         self.snr_spinbox.valueChanged.connect(self._update_bw_estimate)
         self.radio_snr.toggled.connect(self._on_noise_mode_changed)
+        self.noise_bandwidth_combo.currentIndexChanged.connect(self._on_noise_bandwidth_changed)
         self.hopping_enable_chk.toggled.connect(self._on_hopping_mode_changed)
         self.qam_combo.currentIndexChanged.connect(self._on_qam_changed)
 
@@ -1046,6 +1192,21 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         group.setLayout(vbox)
         return group
 
+    def _build_interference_group(self):
+        group = QGroupBox("Interference Sources")
+        layout = QVBoxLayout()
+        self.interference_table = QTableWidget(0, 4)
+        self.interference_table.setHorizontalHeaderLabels(
+            ["Enabled", "RFCM Link", "Waveform", "Power (dBm)"]
+        )
+        self.interference_table.setMinimumHeight(90)
+        self.interference_table.setToolTip(
+            "Candidate links sharing the selected receiver are available as interference sources."
+        )
+        layout.addWidget(self.interference_table)
+        group.setLayout(layout)
+        return group
+
     def _build_scenario_plot_group(self):
         group = QGroupBox("Scenario Plot")
         vbox = QVBoxLayout()
@@ -1060,10 +1221,17 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.chk_epoch_evm.setToolTip("Plot RMS Error Vector Magnitude across all simulation frames")
         vbox.addWidget(self.chk_epoch_evm)
 
-        self.chk_epoch_snr = QCheckBox("Effective SNR (dB) vs Frame")
+        self.chk_epoch_snr = QCheckBox("Post-EQ SNR (dB) vs Frame")
         self.chk_epoch_snr.setChecked(True)
-        self.chk_epoch_snr.setToolTip("Plot measured effective SNR across all simulation frames")
+        self.chk_epoch_snr.setToolTip("Plot measured post-equalization symbol-domain SNR across all simulation frames")
         vbox.addWidget(self.chk_epoch_snr)
+
+        self.chk_epoch_sinr = QCheckBox("SINR (dB) vs Frame")
+        self.chk_epoch_sinr.setChecked(True)
+        self.chk_epoch_sinr.setToolTip(
+            "Plot the physical pre-equalization signal-to-interference-plus-noise ratio across all simulation frames"
+        )
+        vbox.addWidget(self.chk_epoch_sinr)
 
         self.chk_epoch_channel_bw = QCheckBox("Required Bandwidth to Sustain Data Rate vs Frame")
         self.chk_epoch_channel_bw.setChecked(True)
@@ -1084,10 +1252,19 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         use_snr = self.radio_snr.isChecked()
         self.snr_spinbox.setEnabled(use_snr)
         self.tx_power_spinbox.setEnabled(not use_snr)
-        self.rx_noise_spinbox.setEnabled(not use_snr)
-        if use_snr:
-            self.rx_noise_spinbox.setValue(-120.0)
+        self.noise_density_spinbox.setEnabled(not use_snr)
+        self.noise_figure_spinbox.setEnabled(not use_snr)
+        self.noise_bandwidth_combo.setEnabled(not use_snr)
+        self.noise_bandwidth_spinbox.setEnabled(
+            not use_snr and self.noise_bandwidth_combo.currentData() == "user"
+        )
         self._update_bw_estimate()
+
+    def _on_noise_bandwidth_changed(self):
+        self.noise_bandwidth_spinbox.setEnabled(
+            self.radio_power_noise.isChecked()
+            and self.noise_bandwidth_combo.currentData() == "user"
+        )
 
     def _on_hopping_mode_changed(self):
         self.hopping_freq_edit.setEnabled(self.hopping_enable_chk.isChecked())
@@ -1114,7 +1291,36 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             self.rx_combo.setItemData(self.rx_combo.count() - 1, label, Qt.ToolTipRole)
         self.rx_combo.setCurrentIndex(0)
         self.rx_combo.setToolTip(self.rx_combo.currentText())
+        self._populate_interference_table(lname)
         self._update_bw_estimate()
+
+    def _populate_interference_table(self, desired_link):
+        table = getattr(self, "interference_table", None)
+        if table is None:
+            return
+        table.setRowCount(0)
+        links_metadata = self._file_metadata.get("links_metadata") or {}
+        desired = links_metadata.get(desired_link)
+        if not desired:
+            return
+        candidates = [
+            (identifier, metadata)
+            for identifier, metadata in links_metadata.items()
+            if identifier != desired_link
+            and metadata.get("rx_name") == desired.get("rx_name")
+        ]
+        for row, (identifier, metadata) in enumerate(candidates):
+            table.insertRow(row)
+            enabled = QCheckBox()
+            enabled.setChecked(False)
+            table.setCellWidget(row, 0, enabled)
+            table.setItem(row, 1, QTableWidgetItem(identifier))
+            waveform = QComboBox()
+            waveform.addItems(["QAM", "CW Tone", "Wideband Noise"])
+            table.setCellWidget(row, 2, waveform)
+            power = QTableWidgetItem("0.0")
+            table.setItem(row, 3, power)
+        table.resizeColumnsToContents()
 
     @staticmethod
     def _parse_hopping_frequencies(freq_text):
@@ -1183,13 +1389,22 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.effective_snr_label.setFont(QFont("Arial", 14, QFont.Bold))
         self.evm_label = QLabel("--")
         self.evm_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.snr_label = QLabel("--")
+        self.snr_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.sir_label = QLabel("--")
+        self.sir_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.sinr_label = QLabel("--")
+        self.sinr_label.setFont(QFont("Arial", 14, QFont.Bold))
 
         ber_form.addRow("Instant BER:", self.ber_label)
         ber_form.addRow("Theory BER:", self.theory_label)
         ber_form.addRow("Average BER:", self.avg_ber_label)
         ber_form.addRow("Peak SNR:", self.peak_snr_label)
-        ber_form.addRow("Effective SNR:", self.effective_snr_label)
+        ber_form.addRow("Post-EQ SNR:", self.effective_snr_label)
         ber_form.addRow("EVM (%):", self.evm_label)
+        ber_form.addRow("Physical SNR:", self.snr_label)
+        ber_form.addRow("SIR:", self.sir_label)
+        ber_form.addRow("SINR:", self.sinr_label)
         ber_group.setLayout(ber_form)
         svbox.addWidget(ber_group, 0)
 
@@ -1431,8 +1646,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
     def _update_bw_estimate(self):
         if not self.radio_snr.isChecked():
             self.bw_est_label.setText(
-                "Required BW (Shannon) is shown only in SNR mode. "
-                "In Tx Power + Rx Broadband Noise mode, effective SNR is derived during analysis."
+                "Noise power is computed as Noise Density x Noise Bandwidth x Noise Figure. "
+                "Select the equivalent bandwidth used to integrate receiver noise."
             )
             self.bw_est_label.setTextFormat(Qt.PlainText)
             return
@@ -1476,7 +1691,24 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         tx_index = int(tx_data) if tx_data is not None else self.tx_combo.currentIndex()
         rx_index = int(rx_data) if rx_data is not None else self.rx_combo.currentIndex()
         noise_mode = "snr" if self.radio_snr.isChecked() else "power_noise"
-        rx_noise_dbm = -120.0 if noise_mode == "snr" else self.rx_noise_spinbox.value()
+        interference = []
+        for row in range(self.interference_table.rowCount()):
+            enabled = self.interference_table.cellWidget(row, 0)
+            waveform = self.interference_table.cellWidget(row, 2)
+            power_item = self.interference_table.item(row, 3)
+            try:
+                power_dbm = float(power_item.text()) if power_item else 0.0
+            except ValueError as exc:
+                raise ValueError("Interference powers must be numeric dBm values.") from exc
+            interference.append(
+                {
+                    "link": self.interference_table.item(row, 1).text(),
+                    "enabled": bool(enabled and enabled.isChecked()),
+                    "waveform": waveform.currentText() if waveform else "QAM",
+                    "power_dbm": power_dbm,
+                    "frequency_offset_hz": 0.0,
+                }
+            )
         return {
             "source_type": self.source_mode_combo.currentData(),
             "analysis_name": self.analysis_combo.currentData(),
@@ -1497,7 +1729,11 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             "rx_index": int(rx_index),
             "noise_mode": noise_mode,
             "tx_power_dbm": self.tx_power_spinbox.value(),
-            "rx_noise_dbm": rx_noise_dbm,
+            "noise_density_dbm_hz": self.noise_density_spinbox.value(),
+            "noise_figure_db": self.noise_figure_spinbox.value(),
+            "noise_bandwidth_mode": self.noise_bandwidth_combo.currentData(),
+            "noise_bandwidth_mhz": self.noise_bandwidth_spinbox.value(),
+            "interference": interference,
             "hopping_enabled": self.hopping_enable_chk.isChecked(),
             "hopping_freq_text": self.hopping_freq_edit.text().strip(),
             "plot_constellation": self.chk_constellation.isChecked(),
@@ -1523,6 +1759,9 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.peak_snr_label.setText("--")
         self.effective_snr_label.setText("--")
         self.evm_label.setText("--")
+        self.snr_label.setText("--")
+        self.sir_label.setText("--")
+        self.sinr_label.setText("--")
 
         self._stop_gif_animation()
         self.gif_label.clear()
@@ -1532,6 +1771,15 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self._clear_epoch_plots(running=True)
 
         params = self._collect_params()
+
+        interference_links = [item["link"] for item in params["interference"] if item["enabled"]]
+        if params["tx_link"] in interference_links:
+            QMessageBox.warning(
+                self,
+                "Interference Configuration",
+                "The desired link cannot also be selected as an interference source.",
+            )
+            return
 
         _tx_link = params.get("tx_link")
         _rx_link = params.get("rx_link")
@@ -1626,8 +1874,11 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             self.status_log.append(f"Noise mode: SNR = {params['snr_db']:.2f} dB")
         else:
             self.status_log.append(
-                "Noise mode: Tx Power / Rx Broadband Noise = "
-                f"{params['tx_power_dbm']:.2f} dBm / {params['rx_noise_dbm']:.2f} dBm"
+                "Noise mode: Tx Power / Noise Density = "
+                f"{params['tx_power_dbm']:.2f} dBm / "
+                f"{params['noise_density_dbm_hz']:.2f} dBm/Hz | "
+                f"NF={params['noise_figure_db']:.2f} dB | "
+                f"Bandwidth={params['noise_bandwidth_mode']}"
             )
         if params["hopping_enabled"]:
             self.status_log.append(
@@ -1664,13 +1915,27 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.status_log.append(message)
         self.status_log.verticalScrollBar().setValue(self.status_log.verticalScrollBar().maximum())
 
-    def _on_ber(self, instant_ber, theory_ber, avg_ber, peak_snr_db, effective_snr_db, evm_pct):
+    def _on_ber(
+        self,
+        instant_ber,
+        theory_ber,
+        avg_ber,
+        peak_snr_db,
+        effective_snr_db,
+        evm_pct,
+        snr_db,
+        sir_db,
+        sinr_db,
+    ):
         self.ber_label.setText(f"{instant_ber:.3e}")
         self.theory_label.setText(f"{theory_ber:.3e}")
         self.avg_ber_label.setText(f"{avg_ber:.3e}")
         self.peak_snr_label.setText(f"{peak_snr_db:.2f} dB")
         self.effective_snr_label.setText(f"{effective_snr_db:.2f} dB")
         self.evm_label.setText(f"{evm_pct:.2f}")
+        self.snr_label.setText(f"{snr_db:.2f} dB")
+        self.sir_label.setText(f"{sir_db:.2f} dB")
+        self.sinr_label.setText(f"{sinr_db:.2f} dB")
 
         if instant_ber < theory_ber * 1.5:
             self.ber_label.setStyleSheet("color: #66bb6a;")
@@ -1875,9 +2140,15 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             ))
         if self.chk_epoch_snr.isChecked():
             plots_to_render.append((
-                "Effective SNR (dB) vs Frame",
-                "Frame", "Effective SNR (dB)",
-                data["eff_snr_db"], False,
+                "Post-EQ SNR (dB) vs Frame",
+                "Frame", "Post-EQ SNR (dB)",
+                data["post_eq_snr_db"], False,
+            ))
+        if self.chk_epoch_sinr.isChecked():
+            plots_to_render.append((
+                "SINR (dB) vs Frame",
+                "Frame", "SINR (dB)",
+                data["sinr_db"], False,
             ))
         if self.chk_epoch_channel_bw.isChecked():
             plots_to_render.append((
@@ -1898,7 +2169,8 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         _filename_map = {
             "Average BER vs Frame": f"epoch_avg_ber_{qam_order}qam.gif",
             "EVM (%) vs Frame": f"epoch_evm_pct_{qam_order}qam.gif",
-            "Effective SNR (dB) vs Frame": f"epoch_eff_snr_db_{qam_order}qam.gif",
+            "Post-EQ SNR (dB) vs Frame": f"epoch_post_eq_snr_db_{qam_order}qam.gif",
+            "SINR (dB) vs Frame": f"epoch_sinr_db_{qam_order}qam.gif",
             "Required Bandwidth to Sustain Data Rate vs. Frame": f"epoch_required_bw_mhz_{qam_order}qam.gif",
         }
         for (title, xlabel, ylabel, values, use_log_y) in plots_to_render:

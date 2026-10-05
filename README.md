@@ -62,3 +62,16 @@ major version (for example, `cupy-cuda12x`) and select **Use GPU** in the UI.
 - During analysis, the broker continuously computes into a bounded two-frame buffer.
 	RFCM can generate upcoming frames while the toolkit post-processes the current frame;
 	queue backpressure pauses generation only when both buffered frames are occupied.
+- The end-to-end toolkit can enable additional links that terminate at the selected
+	receiver as interference sources. Each source supports QAM, CW tone, or wideband
+	noise with independent transmit power, and the status panel reports physical SNR,
+	SIR, and SINR.
+- In physical Tx Power + Noise Density mode, receiver noise is computed as
+	`P_noise = N0 * B_equivalent * F`, where `N0` is in dBm/Hz, `B_equivalent`
+	is selected as signal, RFMC channel, sample, or user-defined bandwidth, and
+	`F` is the linear receiver noise factor.
+- The End-to-End RF spectrum is plotted after removing the sampled carrier alias,
+	then mapping the centered FFT back to the physical RF frequency. Power is shown
+	per true FFT bin at the displayed RBW.
+- RFCM projects expose an `RFCM Analysis` selector before `Link`; changing the
+	analysis reconstructs and repopulates its available links and antenna controls.
