@@ -11,14 +11,16 @@ import io
 import math
 import os
 import re
+import shutil
 import sys
 import time as tyme
 import webbrowser
 from pathlib import Path
 
+import imageio_ffmpeg
 import matplotlib
 import numpy as np
-from PIL import Image, ImageSequence
+from PIL import Image
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPalette, QPixmap
 from PySide6.QtWidgets import (
@@ -39,6 +41,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QDoubleSpinBox,
     QTableWidget,
@@ -50,7 +53,7 @@ from PySide6.QtWidgets import (
 )
 from scipy.signal import lfilter, upfirdn
 
-from toolkit_lib.channel_sources import create_channel_source
+from toolkit_lib.channel_sources import RfcmGraphicsSource, create_channel_source
 from toolkit_lib.qam_end_to_end import QAMEndToEndSystem
 
 matplotlib.use("Agg")
@@ -69,6 +72,34 @@ os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = plugin_path
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+def _encode_mp4(frames, output_path, fps):
+    first = frames[0].convert("RGB")
+    width, height = first.size
+    video_width = width + (width % 2)
+    video_height = height + (height % 2)
+    writer = imageio_ffmpeg.write_frames(
+        str(output_path),
+        (video_width, video_height),
+        fps=max(float(fps), 1.0),
+        codec="libx264",
+        pix_fmt_in="rgb24",
+        pix_fmt_out="yuv420p",
+        macro_block_size=1,
+        ffmpeg_log_level="error",
+    )
+    writer.send(None)
+    try:
+        for frame in frames:
+            rgb_frame = frame.convert("RGB")
+            if rgb_frame.size != (video_width, video_height):
+                padded = Image.new("RGB", (video_width, video_height))
+                padded.paste(rgb_frame, (0, 0))
+                rgb_frame = padded
+            writer.send(np.asarray(rgb_frame))
+    finally:
+        writer.close()
 
 DARK_STYLESHEET = """
 QToolTip {
@@ -396,6 +427,7 @@ class RSTImportWorker(QThread):
     gif_ready = Signal(str)
     file_info = Signal(object)
     epoch_data_ready = Signal(object)
+    graphics_startup_failed = Signal(str)
 
     def __init__(self, file_path, params):
         super().__init__()
@@ -403,6 +435,7 @@ class RSTImportWorker(QThread):
         self.params = params
         self.is_running = True
         self._source = None
+        self._graphics_source = None
 
     def run(self):
         try:
@@ -415,6 +448,9 @@ class RSTImportWorker(QThread):
             if self._source is not None:
                 self._source.close()
                 self._source = None
+            if self._graphics_source is not None:
+                self._graphics_source.close()
+                self._graphics_source = None
 
     def _process_file(self):
         qam_order = self.params["qam_order"]
@@ -451,6 +487,9 @@ class RSTImportWorker(QThread):
 
         source_type = self.params.get("source_type", "hdf5")
         analysis_name = self.params.get("analysis_name")
+        enable_scenario_graphics = (
+            source_type == "rfcm" and bool(self.params.get("enable_scenario_graphics", False))
+        )
         interference_cfgs = [
             cfg for cfg in self.params.get("interference", []) if cfg.get("enabled", True)
         ]
@@ -542,8 +581,22 @@ class RSTImportWorker(QThread):
         required_bw_history = []
         self.progress_update.emit(
             0,
-            f"Processing {time_samples} frames for Tx{tx_index + 1}-Rx{rx_index + 1} and generating GIF ...",
+            f"Processing {time_samples} frames for Tx{tx_index + 1}-Rx{rx_index + 1} and generating MP4 ...",
         )
+
+        if enable_scenario_graphics:
+            self.progress_update.emit(
+                0, "Starting parallel graphics-enabled STK session for scenario snapshots ..."
+            )
+            try:
+                self._graphics_source = RfcmGraphicsSource(self.file_path)
+            except Exception as exc:
+                self.graphics_startup_failed.emit(str(exc))
+                self.progress_update.emit(
+                    0,
+                    f"WARNING: Unable to start scenario graphics session; continuing without snapshots: {exc}",
+                )
+                enable_scenario_graphics = False
 
         for bundle in source.iterate_frame_bundles(source_links, first_only=True):
             if not self.is_running:
@@ -557,6 +610,19 @@ class RSTImportWorker(QThread):
                 bundle[cfg["link"]][0].channel[0, rx_index]
                 for cfg in interference_cfgs
             ]
+            snapshot_image = None
+            if enable_scenario_graphics and self._graphics_source is not None:
+                try:
+                    snapshot_bytes = self._graphics_source.capture_frame(sounding.time_s)
+                    snapshot_image = Image.open(io.BytesIO(snapshot_bytes)).convert("RGB")
+                except Exception as exc:
+                    self.progress_update.emit(
+                        0,
+                        f"WARNING: Scenario graphics capture failed; disabling snapshots for the rest of this run: {exc}",
+                    )
+                    enable_scenario_graphics = False
+                    self._graphics_source.close()
+                    self._graphics_source = None
             current_fc_hz = hopping_freqs_hz[i_frame % len(hopping_freqs_hz)] if hopping_enabled else fc
             hop_idx = (i_frame % len(hopping_freqs_hz)) + 1 if hopping_enabled else 1
             hop_total = len(hopping_freqs_hz) if hopping_enabled else 1
@@ -723,8 +789,24 @@ class RSTImportWorker(QThread):
             buf = io.BytesIO()
             fig.savefig(buf, format="png", dpi=80)
             buf.seek(0)
-            gif_frames.append(Image.open(buf).convert("RGB").copy())
+            panel_image = Image.open(buf).convert("RGB")
             plt.close(fig)
+
+            frame_image = panel_image
+            if snapshot_image is not None:
+                scale = panel_image.width / max(snapshot_image.width, 1)
+                scaled_height = max(int(snapshot_image.height * scale), 1)
+                scenario_resized = snapshot_image.resize(
+                    (panel_image.width, scaled_height), Image.Resampling.LANCZOS
+                )
+                combined = Image.new(
+                    "RGB", (panel_image.width, scaled_height + panel_image.height)
+                )
+                combined.paste(scenario_resized, (0, 0))
+                combined.paste(panel_image, (0, scaled_height))
+                frame_image = combined
+
+            gif_frames.append(frame_image.copy())
 
             toc = tyme.perf_counter()
             self.progress_update.emit(
@@ -745,19 +827,15 @@ class RSTImportWorker(QThread):
 
         source.close()
         self._source = None
+        if self._graphics_source is not None:
+            self._graphics_source.close()
+            self._graphics_source = None
 
         if gif_frames:
-            gif_path = str(OUTPUT_DIR / f"comm_analysis_{qam_order}qam.gif")
-            self.progress_update.emit(0, f"Saving GIF ({len(gif_frames)} frames) to {gif_path}")
-            gif_frames[0].save(
-                gif_path,
-                save_all=True,
-                append_images=gif_frames[1:],
-                loop=0,
-                duration=max(int(1000 / max(gif_fps, 1)), 1),
-                optimize=False,
-            )
-            self.gif_ready.emit(gif_path)
+            mp4_path = str(OUTPUT_DIR / f"comm_analysis_{qam_order}qam.mp4")
+            self.progress_update.emit(0, f"Saving MP4 ({len(gif_frames)} frames) to {mp4_path}")
+            _encode_mp4(gif_frames, mp4_path, gif_fps)
+            self.gif_ready.emit(mp4_path)
 
         self.epoch_data_ready.emit({
             "avg_ber": avg_ber_history,
@@ -971,6 +1049,18 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         )
         self.analysis_combo.currentIndexChanged.connect(self._on_analysis_changed)
 
+        self.chk_scenario_graphics = QCheckBox("Enable Scenario Graphics Snapshot (visible STK Desktop session)")
+        self.chk_scenario_graphics.setChecked(False)
+        self.chk_scenario_graphics.setEnabled(False)
+        self.chk_scenario_graphics.setToolTip(
+            "Capture the project's saved 3D Graphics view for each frame using a second, "
+            "visible STK Desktop session running alongside the headless RFCM Engine session. "
+            "Requires an additional STK Desktop license seat and a working OpenGL renderer; a "
+            "visible STK window will open on your desktop for the duration of the analysis. "
+            "Snapshots are shown above the Output Plot Panel and saved in the MP4 video."
+        )
+        layout.addWidget(self.chk_scenario_graphics)
+
         self.btn_load_metadata = QPushButton("Load Metadata")
         self.btn_load_metadata.setEnabled(False)
         self.btn_load_metadata.setStyleSheet(
@@ -1145,7 +1235,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         # Keep existing advanced input used by the processing chain.
         form.addRow("Channel Taps:", self.taps_spinbox)
-        form.addRow("GIF FPS:", self.gif_fps_spinbox)
+        form.addRow("MP4 FPS:", self.gif_fps_spinbox)
 
         self.bw_est_label = QLabel()
         self.bw_est_label.setWordWrap(True)
@@ -1414,7 +1504,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         gif_tab = QWidget()
         gvbox = QVBoxLayout()
 
-        self.gif_label = QLabel("GIF will appear here after analysis completes.")
+        self.gif_label = QLabel("MP4 video will appear here after analysis completes.")
         self.gif_label.setAlignment(Qt.AlignCenter)
         self.gif_label.setStyleSheet(
             "background-color: #1a1a2e; color: #aaa; font-size: 10pt; border-radius: 6px;"
@@ -1427,7 +1517,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         save_row = QHBoxLayout()
         save_row.addStretch()
-        self.btn_save_gif = QPushButton("Save GIF As ...")
+        self.btn_save_gif = QPushButton("Save MP4 As ...")
         self.btn_save_gif.setEnabled(False)
         self.btn_save_gif.setStyleSheet(
             "background-color: #2196f3; color: white; font-weight: bold; padding: 7px;"
@@ -1464,6 +1554,13 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         gvbox.addLayout(control_row)
 
+        self.gif_slider = QSlider(Qt.Horizontal)
+        self.gif_slider.setRange(0, 0)
+        self.gif_slider.setEnabled(False)
+        self.gif_slider.setToolTip("Seek to a video frame")
+        self.gif_slider.valueChanged.connect(self._seek_gif_frame)
+        gvbox.addWidget(self.gif_slider)
+
         gif_tab.setLayout(gvbox)
         tabs.addTab(gif_tab, "Output Plot Panel")
 
@@ -1495,6 +1592,9 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
     def _on_source_mode_changed(self):
         is_rfcm = self.source_mode_combo.currentData() == "rfcm"
         self.analysis_combo.setEnabled(is_rfcm)
+        self.chk_scenario_graphics.setEnabled(is_rfcm)
+        if not is_rfcm:
+            self.chk_scenario_graphics.setChecked(False)
         self.file_path_edit.clear()
         self._channel_file_path = ""
         self._file_metadata = {}
@@ -1712,6 +1812,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         return {
             "source_type": self.source_mode_combo.currentData(),
             "analysis_name": self.analysis_combo.currentData(),
+            "enable_scenario_graphics": self.chk_scenario_graphics.isChecked(),
             "qam_order": qam_order,
             "center_freq": self.freq_spinbox.value() * 1e9,
             "bandwidth": self.bw_spinbox.value() * 1e6,
@@ -1765,7 +1866,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         self._stop_gif_animation()
         self.gif_label.clear()
-        self.gif_label.setText("Analysis running. GIF will appear here on completion ...")
+        self.gif_label.setText("Analysis running. MP4 video will appear here on completion ...")
         self.btn_save_gif.setEnabled(False)
         self._set_gif_controls_enabled(False)
         self._clear_epoch_plots(running=True)
@@ -1891,6 +1992,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.worker.file_info.connect(self._on_file_info)
         self.worker.gif_ready.connect(self._on_gif_ready)
         self.worker.epoch_data_ready.connect(self._on_epoch_data_ready)
+        self.worker.graphics_startup_failed.connect(self._on_graphics_startup_failed)
         self.worker.analysis_complete.connect(self._on_complete)
 
         self.run_button.setEnabled(False)
@@ -1901,6 +2003,16 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         if self.worker:
             self.worker.is_running = False
             self.worker.wait()
+
+    def _on_graphics_startup_failed(self, details):
+        QMessageBox.warning(
+            self,
+            "Scenario Graphics Unavailable",
+            "The toolkit could not open the STK Desktop graphics session.\n\n"
+            "If the project is already open in STK, close it and try again. "
+            "The analysis will continue without scenario snapshots.\n\n"
+            f"Details: {details}",
+        )
 
     def _on_progress(self, frame_num, message):
         match = re.search(r"Frame\s+(\d+)\s*/\s*(\d+)", message)
@@ -1957,32 +2069,33 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         )
         self.file_info_label.setText(txt)
 
-    def _on_gif_ready(self, gif_path):
-        self._gif_path = gif_path
-        if not os.path.exists(gif_path):
-            self.gif_label.setText(f"GIF not found: {gif_path}")
+    def _on_gif_ready(self, video_path):
+        self._gif_path = video_path
+        if not os.path.exists(video_path):
+            self.gif_label.setText(f"MP4 not found: {video_path}")
             self._set_gif_controls_enabled(False)
             return
 
         self._stop_gif_animation()
 
         try:
-            frames, durations = self._load_gif_frames(gif_path)
+            frames, durations = self._load_video_frames(video_path)
         except Exception as exc:
-            self.gif_label.setText(f"Unable to load GIF: {exc}")
+            self.gif_label.setText(f"Unable to load MP4: {exc}")
             self._gif_frames = []
             self._gif_durations = []
             self._set_gif_controls_enabled(False)
             return
 
         if not frames:
-            self.gif_label.setText(f"Unable to load GIF: {gif_path}")
+            self.gif_label.setText(f"Unable to load MP4: {video_path}")
             self._set_gif_controls_enabled(False)
             return
 
         self._gif_frames = frames
         self._gif_durations = durations
         self._gif_frame_index = 0
+        self.gif_slider.setRange(0, len(frames) - 1)
         self.btn_save_gif.setEnabled(True)
         self._set_gif_controls_enabled(True)
 
@@ -1991,21 +2104,26 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
         QTimer.singleShot(0, self._start_gif_animation)
 
-    def _load_gif_frames(self, gif_path):
+    def _load_video_frames(self, video_path):
         frames = []
         durations = []
-        with Image.open(gif_path) as gif_image:
-            for frame in ImageSequence.Iterator(gif_image):
-                rgba_frame = frame.convert("RGBA")
+        reader = imageio_ffmpeg.read_frames(video_path, pix_fmt="rgb24")
+        metadata = next(reader)
+        width, height = metadata["size"]
+        duration_ms = max(int(1000 / max(float(metadata.get("fps", 10)), 1.0)), 20)
+        try:
+            for frame_bytes in reader:
                 qimage = QImage(
-                    rgba_frame.tobytes("raw", "RGBA"),
-                    rgba_frame.width,
-                    rgba_frame.height,
-                    rgba_frame.width * 4,
-                    QImage.Format_RGBA8888,
+                    frame_bytes,
+                    width,
+                    height,
+                    width * 3,
+                    QImage.Format_RGB888,
                 ).copy()
                 frames.append(QPixmap.fromImage(qimage))
-                durations.append(max(int(frame.info.get("duration", 100)), 20))
+                durations.append(duration_ms)
+        finally:
+            reader.close()
         return frames, durations
 
     def _start_gif_animation(self):
@@ -2029,7 +2147,11 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         if not self._gif_frames:
             return
 
-        pixmap = self._gif_frames[frame_index]
+        self._gif_frame_index = max(0, min(frame_index, len(self._gif_frames) - 1))
+        self.gif_slider.blockSignals(True)
+        self.gif_slider.setValue(self._gif_frame_index)
+        self.gif_slider.blockSignals(False)
+        pixmap = self._gif_frames[self._gif_frame_index]
         scaled = pixmap.scaled(self.gif_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.gif_label.setPixmap(scaled)
 
@@ -2038,6 +2160,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self._gif_frames = []
         self._gif_durations = []
         self._gif_frame_index = 0
+        self.gif_slider.setRange(0, 0)
         self._set_gif_controls_enabled(False)
 
     def _set_gif_controls_enabled(self, enabled):
@@ -2046,6 +2169,13 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.btn_pause_gif.setEnabled(enabled)
         self.btn_stop_gif.setEnabled(enabled)
         self.btn_next_frame.setEnabled(enabled)
+        self.gif_slider.setEnabled(enabled)
+
+    def _seek_gif_frame(self, frame_index):
+        if not self._gif_frames:
+            return
+        self._gif_timer.stop()
+        self._show_gif_frame(frame_index)
 
     def _play_gif(self):
         if not self._gif_frames:
@@ -2080,20 +2210,18 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
 
     def _save_gif(self):
         if not self._gif_path or not os.path.exists(self._gif_path):
-            QMessageBox.warning(self, "No GIF", "No GIF available to save.")
+            QMessageBox.warning(self, "No MP4", "No MP4 video available to save.")
             return
 
         dest, _ = QFileDialog.getSaveFileName(
             self,
-            "Save GIF",
+            "Save MP4",
             os.path.basename(self._gif_path),
-            "GIF Files (*.gif);;All Files (*.*)",
+            "MP4 Files (*.mp4);;All Files (*.*)",
         )
         if dest:
-            import shutil
-
             shutil.copy2(self._gif_path, dest)
-            QMessageBox.information(self, "Saved", f"GIF saved to:\n{dest}")
+            QMessageBox.information(self, "Saved", f"MP4 saved to:\n{dest}")
 
     def _clear_epoch_plots(self, running=False):
         while self._epoch_layout.count():

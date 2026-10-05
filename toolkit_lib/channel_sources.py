@@ -1,5 +1,8 @@
 """Streaming channel sources for archived HDF5 data and live STK/RFCM projects."""
 
+import os
+import tempfile
+import uuid
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
@@ -725,6 +728,137 @@ class RfcmChannelSource:
             if status == "done":
                 return
             yield payload
+
+
+def _rfcm_graphics_broker(connection, project_path):
+    """Capture the saved 3D Graphics view in a second, visible STK Desktop process."""
+    app = None
+    try:
+        path = Path(project_path)
+        if not path.exists():
+            raise FileNotFoundError(f"STK/RFCM project was not found: {path}")
+        if path.suffix.lower() not in {".vdf", ".sc"}:
+            raise ValueError("Scenario graphics capture requires an STK .vdf or .sc project.")
+
+        try:
+            from agi.stk13.stkdesktop import STKDesktop
+            from agi.stk13.graphics import AgEStkGraphicsCameraSnapshotFileFormat
+        except ImportError as exc:
+            raise RuntimeError(
+                "Scenario graphics capture requires the agi_stk13 wheel bundled with STK 13.1."
+            ) from exc
+
+        app = STKDesktop.StartApplication(visible=True, userControl=False)
+        root = app.Root
+        if path.suffix.lower() == ".vdf":
+            root.LoadVDF(str(path), "")
+        else:
+            root.LoadScenario(str(path))
+        scenario = root.CurrentScenario
+        scene_manager = scenario.SceneManager
+        if scene_manager.Scenes.Count < 1:
+            raise RuntimeError("The STK project has no saved 3D Graphics scene to capture.")
+        scene = scene_manager.Scenes.Item(0)
+        png_format = AgEStkGraphicsCameraSnapshotFileFormat.eStkGraphicsCameraSnapshotFileFormatPng
+
+        connection.send(("ready", None))
+        while True:
+            command, arguments = connection.recv()
+            try:
+                if command == "capture_frame":
+                    (time_s,) = arguments
+                    root.CurrentTime = float(time_s)
+                    scene_manager.Render()
+                    tmp_path = Path(tempfile.gettempdir()) / f"stk_snapshot_{os.getpid()}_{uuid.uuid4().hex}.png"
+                    try:
+                        scene.Camera.Snapshot.SaveToFile(str(tmp_path), png_format)
+                        image_bytes = tmp_path.read_bytes()
+                    finally:
+                        tmp_path.unlink(missing_ok=True)
+                    connection.send(("result", image_bytes))
+                elif command == "close":
+                    connection.send(("result", None))
+                    break
+                else:
+                    raise ValueError(f"Unknown graphics broker command: {command}")
+            except Exception as exc:
+                connection.send(("error", f"{type(exc).__name__}: {exc}"))
+    except Exception as exc:
+        connection.send(("error", f"{type(exc).__name__}: {exc}"))
+    finally:
+        if app is not None:
+            try:
+                app.ShutDown()
+            except Exception:
+                pass
+        connection.close()
+
+
+class RfcmGraphicsSource:
+    """Capture the project's saved 3D Graphics view from a second, visible STK Desktop
+    session. Isolated from the primary headless RFCM Engine broker; requires a second STK
+    Desktop license seat and a working OpenGL renderer. The Desktop window is visible on the
+    user's screen for the lifetime of the capture session."""
+
+    def __init__(self, project_path):
+        self.file_path = str(project_path)
+        context = get_context("spawn")
+        self._connection, child_connection = context.Pipe()
+        self._process = context.Process(
+            target=_rfcm_graphics_broker,
+            args=(child_connection, self.file_path),
+            name="RFCM Graphics Broker",
+            daemon=True,
+        )
+        self._process.start()
+        child_connection.close()
+        status, payload = self._connection.recv()
+        if status != "ready":
+            self.close()
+            raise RuntimeError(f"Unable to start the RFCM graphics broker: {payload}")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def _request(self, command, *arguments):
+        if self._process is None or not self._process.is_alive():
+            raise RuntimeError("The RFCM graphics broker process is not running.")
+        try:
+            self._connection.send((command, arguments))
+            status, payload = self._connection.recv()
+        except (BrokenPipeError, EOFError, OSError) as exc:
+            raise RuntimeError("The RFCM graphics broker process ended unexpectedly.") from exc
+        if status == "error":
+            raise RuntimeError(payload)
+        return payload
+
+    def capture_frame(self, time_s):
+        """Return PNG image bytes of the saved 3D view at the given scenario time."""
+        return self._request("capture_frame", time_s)
+
+    def close(self):
+        process = getattr(self, "_process", None)
+        connection = getattr(self, "_connection", None)
+        if process is None:
+            return
+        try:
+            if process.is_alive():
+                try:
+                    self._request("close")
+                except RuntimeError:
+                    pass
+                process.join(timeout=5.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5.0)
+        finally:
+            if connection is not None:
+                connection.close()
+            self._process = None
+            self._connection = None
 
 
 def create_channel_source(file_path, source_type="hdf5", analysis_name=None):

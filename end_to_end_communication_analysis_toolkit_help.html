@@ -74,7 +74,7 @@
         <li><b>Propagation/Channel:</b> RF waveform is convolved with h(t), representing the selected Tx-Rx coupling path from the imported file.</li>
         <li><b>Noise Model:</b> Either direct SNR-mode AWGN or physical Tx power plus thermal noise density, receiver noise figure, and selectable equivalent noise bandwidth.</li>
         <li><b>Receiver Chain:</b> Channel estimation + deconvolution, timing alignment, RF downconversion, matched filtering, symbol recovery, hard demapping, BER/EVM/SNR/SIR/SINR extraction.</li>
-        <li><b>Per-frame Analytics:</b> Frequency response, delay profile, RX RF spectrum, and constellation panels are generated and exported as animated GIF.</li>
+        <li><b>Per-frame Analytics:</b> Frequency response, delay profile, RX RF spectrum, and constellation panels are generated and exported as an H.264 MP4 video.</li>
       </ul>
     </div>
 
@@ -119,6 +119,7 @@
       <h2>Live STK / RFCM Project Mode</h2>
       <p>Select <b>STK/RFCM Project (VDF/SC)</b>, browse to the project, and click <b>Load Metadata</b>. The <b>RFCM Analysis</b> list appears immediately before <b>Link</b>. Selecting an analysis reconstructs and repopulates its available links automatically, then updates the antenna controls for the selected link.</p>
       <p>This mode requires STK 13.1, STK Engine and RF Channel Modeler licenses, and the <code>agi_stk13</code> wheel supplied under the STK installation's <code>bin/AgPythonAPI</code> directory. RFCM runs through STK Engine in an isolated broker process and returns frequency-pulse responses frame by frame. The process boundary avoids STK's one-Engine-instance-per-Python-process restriction. A bounded two-frame buffer lets RFCM compute upcoming frames while the toolkit post-processes the current frame.</p>
+      <p><b>Enable Scenario Graphics Snapshot</b> is an optional checkbox shown only in RFCM project mode, unchecked by default. When enabled, the toolkit starts a <i>second</i>, visible STK Desktop session alongside the headless RFCM Engine session and uses it to capture the project's saved 3D Graphics view at each processed frame's scenario time. (STK Engine does not auto-create a 3D Graphics scene even when graphics are enabled, so snapshot capture requires an actual Desktop session.) Each snapshot is composited above the existing panels, both in the <b>Output Plot Panel</b> preview and in the saved MP4 video. This requires a second STK Desktop license seat and a working OpenGL renderer, and a visible STK window will open on your desktop for the duration of the analysis. If the graphics session cannot start, the toolkit shows a warning asking you to close any already-open copy of the project and continues without snapshots; if a later frame capture fails, it logs a warning and disables snapshots for the rest of the run. When this checkbox is left unchecked (the default), the entire analysis remains headless and uses only a single STK license.</p>
     </div>
 
     <div class="card">
@@ -146,7 +147,7 @@
           <tr><td>User Noise Bandwidth (MHz)</td><td>Explicit equivalent noise bandwidth when User Defined is selected.</td><td>Provides a controlled receiver-noise integration bandwidth independent of the RFCM channel span.</td></tr>
           <tr><td>RRC Beta</td><td>Roll-off factor of root-raised cosine pulse shaping.</td><td>Lower beta improves spectral compactness but increases time-domain ringing/sensitivity; higher beta relaxes filtering at cost of occupied bandwidth.</td></tr>
           <tr><td>RRC Span</td><td>RRC filter duration in symbols.</td><td>Longer span better approximates ideal pulse but adds latency and computational burden.</td></tr>
-          <tr><td>GIF FPS</td><td>Playback frame rate for exported animation.</td><td>Visualization-only parameter; does not affect DSP results.</td></tr>
+          <tr><td>MP4 FPS</td><td>Playback frame rate for the exported MP4 animation.</td><td>Visualization-only parameter; does not affect DSP results.</td></tr>
           <tr><td>Link</td><td>Selects which link from the imported RST/RSP file to analyse.</td><td>Populated after <b>Load Metadata</b> is pressed. Choosing a different link automatically updates the centre frequency, bandwidth, and the Transmitter / Receiver antenna lists to match that link's dataset.</td></tr>
           <tr><td>Transmitter Antenna</td><td>Selects the transmitter antenna element within the active link.</td><td>Index maps to the first dimension of the channel response tensor. Each Tx–Rx pair yields a unique H(f) path; BER/SNR/EVM can differ significantly between elements.</td></tr>
           <tr><td>Receiver Antenna</td><td>Selects the receiver antenna element within the active link.</td><td>Index maps to the second dimension of the channel response tensor. Combine with the Transmitter Antenna selection to isolate any specific coupling channel in a MIMO dataset.</td></tr>
