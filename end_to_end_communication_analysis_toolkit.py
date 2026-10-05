@@ -490,6 +490,9 @@ class RSTImportWorker(QThread):
         enable_scenario_graphics = (
             source_type == "rfcm" and bool(self.params.get("enable_scenario_graphics", False))
         )
+        scenario_snapshot_interval_s = max(
+            float(self.params.get("scenario_snapshot_interval_s", 0.0)), 0.0
+        )
         interference_cfgs = [
             cfg for cfg in self.params.get("interference", []) if cfg.get("enabled", True)
         ]
@@ -579,6 +582,8 @@ class RSTImportWorker(QThread):
         eff_snr_history = []
         sinr_db_history = []
         required_bw_history = []
+        last_snapshot_image = None
+        last_snapshot_time_s = None
         self.progress_update.emit(
             0,
             f"Processing {time_samples} frames for Tx{tx_index + 1}-Rx{rx_index + 1} and generating MP4 ...",
@@ -610,19 +615,27 @@ class RSTImportWorker(QThread):
                 bundle[cfg["link"]][0].channel[0, rx_index]
                 for cfg in interference_cfgs
             ]
-            snapshot_image = None
+            snapshot_image = last_snapshot_image
             if enable_scenario_graphics and self._graphics_source is not None:
-                try:
-                    snapshot_bytes = self._graphics_source.capture_frame(sounding.time_s)
-                    snapshot_image = Image.open(io.BytesIO(snapshot_bytes)).convert("RGB")
-                except Exception as exc:
-                    self.progress_update.emit(
-                        0,
-                        f"WARNING: Scenario graphics capture failed; disabling snapshots for the rest of this run: {exc}",
-                    )
-                    enable_scenario_graphics = False
-                    self._graphics_source.close()
-                    self._graphics_source = None
+                capture_due = (
+                    last_snapshot_time_s is None
+                    or scenario_snapshot_interval_s <= 0.0
+                    or sounding.time_s - last_snapshot_time_s >= scenario_snapshot_interval_s
+                )
+                if capture_due:
+                    try:
+                        snapshot_bytes = self._graphics_source.capture_frame(sounding.time_s)
+                        last_snapshot_image = Image.open(io.BytesIO(snapshot_bytes)).convert("RGB")
+                        last_snapshot_time_s = sounding.time_s
+                        snapshot_image = last_snapshot_image
+                    except Exception as exc:
+                        self.progress_update.emit(
+                            0,
+                            f"WARNING: Scenario graphics capture failed; disabling snapshots for the rest of this run: {exc}",
+                        )
+                        enable_scenario_graphics = False
+                        self._graphics_source.close()
+                        self._graphics_source = None
             current_fc_hz = hopping_freqs_hz[i_frame % len(hopping_freqs_hz)] if hopping_enabled else fc
             hop_idx = (i_frame % len(hopping_freqs_hz)) + 1 if hopping_enabled else 1
             hop_total = len(hopping_freqs_hz) if hopping_enabled else 1
@@ -1060,6 +1073,26 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             "Snapshots are shown above the Output Plot Panel and saved in the MP4 video."
         )
         layout.addWidget(self.chk_scenario_graphics)
+
+        self.scenario_snapshot_interval_spinbox = QDoubleSpinBox()
+        self.scenario_snapshot_interval_spinbox.setRange(0.0, 60.0)
+        self.scenario_snapshot_interval_spinbox.setDecimals(2)
+        self.scenario_snapshot_interval_spinbox.setSingleStep(0.05)
+        self.scenario_snapshot_interval_spinbox.setValue(0.30)
+        self.scenario_snapshot_interval_spinbox.setSuffix(" s")
+        self.scenario_snapshot_interval_spinbox.setSpecialValueText("Every analysis frame")
+        self.scenario_snapshot_interval_spinbox.setEnabled(False)
+        self.scenario_snapshot_interval_spinbox.setToolTip(
+            "Minimum scenario-time interval between STK graphics captures. "
+            "Intermediate video frames reuse the latest snapshot; zero captures every analysis frame."
+        )
+        self.chk_scenario_graphics.toggled.connect(
+            self.scenario_snapshot_interval_spinbox.setEnabled
+        )
+        snapshot_interval_row = QHBoxLayout()
+        snapshot_interval_row.addWidget(QLabel("Scenario Snapshot Interval:"))
+        snapshot_interval_row.addWidget(self.scenario_snapshot_interval_spinbox)
+        layout.addLayout(snapshot_interval_row)
 
         self.btn_load_metadata = QPushButton("Load Metadata")
         self.btn_load_metadata.setEnabled(False)
@@ -1595,6 +1628,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
         self.chk_scenario_graphics.setEnabled(is_rfcm)
         if not is_rfcm:
             self.chk_scenario_graphics.setChecked(False)
+            self.scenario_snapshot_interval_spinbox.setEnabled(False)
         self.file_path_edit.clear()
         self._channel_file_path = ""
         self._file_metadata = {}
@@ -1813,6 +1847,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             "source_type": self.source_mode_combo.currentData(),
             "analysis_name": self.analysis_combo.currentData(),
             "enable_scenario_graphics": self.chk_scenario_graphics.isChecked(),
+            "scenario_snapshot_interval_s": self.scenario_snapshot_interval_spinbox.value(),
             "qam_order": qam_order,
             "center_freq": self.freq_spinbox.value() * 1e9,
             "bandwidth": self.bw_spinbox.value() * 1e6,

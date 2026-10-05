@@ -47,6 +47,7 @@ major version (for example, `cupy-cuda12x`) and select **Use GPU** in the UI.
 ## Notes
 
 - The end-to-end tool writes the generated MP4 animation to the local `output/` folder. Static epoch plots remain exported as GIF image files.
+- Scenario graphics captures default to a 0.30-second scenario-time interval; intermediate MP4 frames reuse the latest scene image. Set the interval to zero to capture every analysis frame.
 - The MIMO tool writes capacity time histories to `output/mimo_capacity_<link>.csv`.
 - MIMO processing uses every channel sounding in chronological frame-major order; the CSV records the outer frame and inner sounding indices for each time sample.
 - Large RST/RSP responses are streamed from HDF5 one sounding and port path at a time; the full response dataset is not loaded into memory. Capacity matrix operations are also processed in bounded subcarrier batches.
