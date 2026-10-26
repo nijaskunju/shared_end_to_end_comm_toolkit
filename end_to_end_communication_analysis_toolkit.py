@@ -55,6 +55,7 @@ from scipy.signal import lfilter, upfirdn
 
 from toolkit_lib.channel_sources import RfcmGraphicsSource, create_channel_source
 from toolkit_lib.qam_end_to_end import QAMEndToEndSystem
+from toolkit_lib.ui_style import TOGGLE_STYLESHEET
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -167,9 +168,6 @@ QPushButton:disabled {
     background-color: #3a3a3a;
     color: #808080;
 }
-QCheckBox, QRadioButton {
-    color: #e0e0e0;
-}
 """
 
 
@@ -194,14 +192,14 @@ def _apply_dark_theme(app):
     palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor(120, 120, 120))
     palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(120, 120, 120))
     app.setPalette(palette)
-    app.setStyleSheet(DARK_STYLESHEET)
+    app.setStyleSheet(DARK_STYLESHEET + TOGGLE_STYLESHEET)
 
 
 def _make_interference_waveform(qam_system, waveform, power_w, frequency_offset_hz=0.0):
     sample_count = qam_system.num_symbols * qam_system.samples_per_symbol
     time_s = np.arange(sample_count) * qam_system.Ts
     if waveform == "CW Tone":
-        signal = np.exp(1j * 2.0 * np.pi * frequency_offset_hz * time_s)
+        signal = np.ones(sample_count, dtype=np.complex128)
     elif waveform == "Wideband Noise":
         signal = np.random.randn(sample_count) + 1j * np.random.randn(sample_count)
     else:
@@ -210,9 +208,10 @@ def _make_interference_waveform(qam_system, waveform, power_w, frequency_offset_
         rrc = qam_system.rrc_filter(
             qam_system.beta, qam_system.samples_per_symbol, qam_system.span
         )
-        baseband = upfirdn(rrc, symbols, qam_system.samples_per_symbol)
-        time_s = np.arange(len(baseband)) * qam_system.Ts
-        signal = baseband * np.exp(1j * 2.0 * np.pi * frequency_offset_hz * time_s)
+        signal = upfirdn(rrc, symbols, qam_system.samples_per_symbol)
+        time_s = np.arange(len(signal)) * qam_system.Ts
+    # Co-channel with the desired signal's active carrier, which follows frequency hopping.
+    signal = signal * np.exp(1j * 2.0 * np.pi * (qam_system.fc + frequency_offset_hz) * time_s)
     scale = np.sqrt(max(power_w, 1e-30) / max(float(np.mean(np.abs(signal) ** 2)), 1e-30))
     return signal * scale
 

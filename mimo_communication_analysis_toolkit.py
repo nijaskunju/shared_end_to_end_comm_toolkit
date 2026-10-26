@@ -51,6 +51,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from toolkit_lib.channel_sources import create_channel_source
+from toolkit_lib.ui_style import TOGGLE_STYLESHEET
 
 plt.style.use("dark_background")
 
@@ -82,6 +83,8 @@ DARK_SERIES_COLORS = {
     "dominant": "#ef9a9a",
     "rank": "#ff5252",
     "reference": "#b0bec5",
+    "usable": "#69f0ae",
+    "outage": "#ff8a80",
 }
 LIGHT_SERIES_COLORS = {
     "capacity": "#1565c0",
@@ -89,7 +92,11 @@ LIGHT_SERIES_COLORS = {
     "dominant": "#ad1457",
     "rank": "#d32f2f",
     "reference": "#546e7a",
+    "usable": "#2e7d32",
+    "outage": "#c62828",
 }
+# Heatmaps average adjacent subcarriers into at most this many frequency bins to bound memory.
+MAX_HEATMAP_FREQUENCY_BINS = 256
 
 
 def _stream_palette(colors, count):
@@ -191,7 +198,7 @@ def _apply_dark_theme(app):
     palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor(120, 120, 120))
     palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(120, 120, 120))
     app.setPalette(palette)
-    app.setStyleSheet(DARK_STYLESHEET)
+    app.setStyleSheet(DARK_STYLESHEET + TOGGLE_STYLESHEET)
 
 
 def _bandlimited_resampler(source_freqs, subcarrier_freqs):
@@ -293,6 +300,37 @@ def _coherence_time(correlation, delta_time_s):
     return float(-delta_time_s / np.log(correlation))
 
 
+def _outage_events(times_s, below_target, last_hold_s):
+    """Sample-and-hold outage intervals: each lasts until the next sample at or above target."""
+    events = []
+    start_s = None
+    for time_s, is_below in zip(times_s, below_target):
+        if is_below and start_s is None:
+            start_s = float(time_s)
+        elif not is_below and start_s is not None:
+            events.append((start_s, float(time_s)))
+            start_s = None
+    if start_s is not None:
+        events.append((start_s, float(times_s[-1]) + last_hold_s))
+    return events
+
+
+def _cell_edges(centers, fallback_width):
+    """Heatmap cell boundaries midway between samples, with end cells mirrored outward."""
+    centers = np.asarray(centers, dtype=float)
+    if centers.size == 1:
+        half_width = 0.5 * fallback_width if fallback_width > 0 else 0.5
+        return np.array([centers[0] - half_width, centers[0] + half_width])
+    midpoints = 0.5 * (centers[1:] + centers[:-1])
+    return np.concatenate(
+        (
+            [2.0 * centers[0] - midpoints[0]],
+            midpoints,
+            [2.0 * centers[-1] - midpoints[-1]],
+        )
+    )
+
+
 def _hdf5_open_error_message(file_path, exc):
     """Add actionable context to common HDF5 open failures."""
     detail = str(exc)
@@ -314,8 +352,9 @@ def _mimo_capacity(
     noise_figure_linear,
     xp=np,
     subcarrier_batch_size=256,
+    usable_snr_threshold_linear=1.0,
 ):
-    """Return OFDM capacity and frequency-averaged spatial diagnostics."""
+    """Return OFDM capacity, frequency-averaged spatial diagnostics, and per-subcarrier metrics."""
     n_subcarriers, n_rx, n_tx = channel.shape
     power_per_subcarrier = tx_power_w / max(n_subcarriers, 1)
     noise_per_receiver = noise_density_w_hz * subcarrier_spacing_hz * noise_figure_linear
@@ -329,6 +368,9 @@ def _mimo_capacity(
     dominant_fraction_sum = xp.asarray(0.0)
     eigenvalue_sums = xp.zeros(gram_size)
     stream_efficiency_sums = xp.zeros(gram_size)
+    subcarrier_efficiency = []
+    subcarrier_gain = []
+    subcarrier_usable_streams = []
     for start in range(0, n_subcarriers, subcarrier_batch_size):
         channel_batch = channel[start : start + subcarrier_batch_size]
         channel_h = xp.swapaxes(xp.conj(channel_batch), 1, 2)
@@ -337,8 +379,17 @@ def _mimo_capacity(
         else:
             gram = channel_h @ channel_batch
         _, log_determinant = xp.linalg.slogdet(identity + scale * gram)
-        efficiency_sum += xp.sum(log_determinant / xp.log(2.0))
+        efficiency_per_subcarrier = log_determinant / xp.log(2.0)
+        efficiency_sum += xp.sum(efficiency_per_subcarrier)
+        subcarrier_efficiency.append(efficiency_per_subcarrier)
+        subcarrier_gain.append(
+            xp.sum(xp.abs(channel_batch) ** 2, axis=(1, 2)) / (n_rx * n_tx)
+        )
         eigenvalues = xp.maximum(xp.linalg.eigvalsh(gram), 0.0)
+        # scale * eigenvalue is the per-eigenmode SNR under equal power per Tx port.
+        subcarrier_usable_streams.append(
+            xp.sum(scale * eigenvalues >= usable_snr_threshold_linear, axis=-1)
+        )
         eigenvalue_sum = xp.sum(eigenvalues, axis=-1, keepdims=True)
         # CuPy ufuncs do not support the 'where'/'out' masking kwargs numpy allows here.
         safe_eigenvalue_sum = xp.where(eigenvalue_sum > 0.0, eigenvalue_sum, 1.0)
@@ -383,6 +434,9 @@ def _mimo_capacity(
         dominant_fraction_sum / n_subcarriers,
         eigenvalue_sums / n_subcarriers,
         subcarrier_spacing_hz * stream_efficiency_sums,
+        xp.concatenate(subcarrier_efficiency),
+        xp.concatenate(subcarrier_gain),
+        xp.concatenate(subcarrier_usable_streams).astype(float),
     )
 
 
@@ -431,6 +485,12 @@ class MIMOCapacityWorker(QThread):
         coherence_bandwidths = []
         temporal_correlations = []
         coherence_times = []
+        usable_stream_means = []
+        usable_stream_mins = []
+        usable_stream_maxes = []
+        heatmap_efficiency_rows = []
+        heatmap_gain_rows = []
+        heatmap_usable_rows = []
         result_times = []
         frame_indices = []
         sounding_indices = []
@@ -443,6 +503,7 @@ class MIMOCapacityWorker(QThread):
             tx_node = metadata.transmitter_name
             rx_node = metadata.receiver_name
             n_p = metadata.n_soundings
+            sounding_interval_s = metadata.sounding_interval_s
             n_s = metadata.n_frequency_samples
             bandwidth_hz = metadata.bandwidth_hz
             center_frequency_hz = metadata.center_frequency_hz
@@ -463,6 +524,12 @@ class MIMOCapacityWorker(QThread):
             offsets = (np.arange(n_subcarriers) - (n_subcarriers - 1) / 2.0) * spacing_hz
             subcarrier_freqs = center_frequency_hz + offsets
             resample_matrix = _bandlimited_resampler(source_freqs, subcarrier_freqs)
+            n_frequency_bins = min(n_subcarriers, MAX_HEATMAP_FREQUENCY_BINS)
+            bin_boundaries = np.linspace(0, n_subcarriers, n_frequency_bins + 1).astype(int)
+            bin_starts = bin_boundaries[:-1]
+            bin_counts = np.diff(bin_boundaries)
+            heatmap_offsets_hz = np.add.reduceat(offsets, bin_starts) / bin_counts
+            usable_snr_threshold_linear = 10.0 ** (self.params["usable_snr_threshold_db"] / 10.0)
 
             tx_power_w = 10.0 ** ((self.params["tx_power_dbm"] - 30.0) / 10.0)
             noise_density_w_hz = 10.0 ** ((self.params["noise_density_dbm_hz"] - 30.0) / 10.0)
@@ -498,14 +565,29 @@ class MIMOCapacityWorker(QThread):
                     noise_density_w_hz,
                     noise_figure_linear,
                     xp,
+                    usable_snr_threshold_linear=usable_snr_threshold_linear,
                 )
                 if use_gpu:
                     metrics = tuple(xp.asnumpy(value) for value in metrics)
                 scalar_metrics = tuple(float(value) for value in metrics[:5])
                 capacity_bps, efficiency, rank, condition, dominant_fraction = scalar_metrics
                 eigenvalues_per_stream, capacity_per_stream = (
-                    np.asarray(value, dtype=float) for value in metrics[5:]
+                    np.asarray(value, dtype=float) for value in metrics[5:7]
                 )
+                subcarrier_efficiency, subcarrier_gain, subcarrier_usable = (
+                    np.asarray(value, dtype=float) for value in metrics[7:]
+                )
+                usable_stream_means.append(float(np.mean(subcarrier_usable)))
+                usable_stream_mins.append(float(np.min(subcarrier_usable)))
+                usable_stream_maxes.append(float(np.max(subcarrier_usable)))
+                for rows, values in (
+                    (heatmap_efficiency_rows, subcarrier_efficiency),
+                    (heatmap_gain_rows, subcarrier_gain),
+                    (heatmap_usable_rows, subcarrier_usable),
+                ):
+                    rows.append(
+                        (np.add.reduceat(values, bin_starts) / bin_counts).astype(np.float32)
+                    )
                 capacities.append(capacity_bps)
                 spectral_efficiencies.append(efficiency)
                 ranks.append(rank)
@@ -527,9 +609,33 @@ class MIMOCapacityWorker(QThread):
                     f"{sounding.sounding_index}/{n_p}: {capacity_bps / 1e9:.3f} Gbps",
                 )
 
-        result_time = np.asarray(result_times)
+        result_time = np.asarray(result_times, dtype=float)
+        target_rate_bps = self.params["target_rate_bps"]
+        below_target = np.asarray(capacities, dtype=float) < target_rate_bps
+        time_steps = np.diff(result_time)
+        positive_steps = time_steps[time_steps > 0]
+        last_hold_s = float(np.median(positive_steps)) if positive_steps.size else sounding_interval_s
+        outage_events = _outage_events(result_time, below_target, last_hold_s)
+        observed_s = float(result_time[-1] - result_time[0] + last_hold_s) if result_time.size else 0.0
+        if observed_s > 0:
+            outage_s = sum(end_s - start_s for start_s, end_s in outage_events)
+            service_availability = max(1.0 - outage_s / observed_s, 0.0)
+        else:
+            service_availability = 1.0 - float(np.mean(below_target)) if below_target.size else float("nan")
+
         safe_link = "".join(character if character.isalnum() else "_" for character in link).strip("_")
         output_path = OUTPUT_DIR / f"mimo_capacity_{safe_link or 'link'}.csv"
+        outage_path = OUTPUT_DIR / f"mimo_outage_events_{safe_link or 'link'}.csv"
+        np.savetxt(
+            outage_path,
+            np.asarray(
+                [(start_s, end_s, end_s - start_s) for start_s, end_s in outage_events],
+                dtype=float,
+            ).reshape(-1, 3),
+            delimiter=",",
+            header="start_time_s,end_time_s,duration_s",
+            comments="",
+        )
         result_table = np.column_stack(
             (
                 result_time,
@@ -544,6 +650,10 @@ class MIMOCapacityWorker(QThread):
                 coherence_bandwidths,
                 temporal_correlations,
                 coherence_times,
+                usable_stream_means,
+                usable_stream_mins,
+                usable_stream_maxes,
+                below_target.astype(int),
             )
         )
         np.savetxt(
@@ -554,7 +664,9 @@ class MIMOCapacityWorker(QThread):
                 "time_s,frame_index,sounding_index,capacity_bps,"
                 "mean_spectral_efficiency_bps_hz,effective_rank,condition_number,"
                 "dominant_eigenvalue_fraction,rms_delay_spread_s,coherence_bandwidth_hz,"
-                "adjacent_sounding_correlation,coherence_time_s"
+                "adjacent_sounding_correlation,coherence_time_s,"
+                "usable_stream_count_mean,usable_stream_count_min,usable_stream_count_max,"
+                "below_target_rate"
             ),
             comments="",
         )
@@ -575,6 +687,24 @@ class MIMOCapacityWorker(QThread):
             "coherence_bandwidth_hz": coherence_bandwidths,
             "temporal_correlation": temporal_correlations,
             "coherence_time_s": coherence_times,
+            "usable_stream_mean": usable_stream_means,
+            "usable_stream_min": usable_stream_mins,
+            "usable_stream_max": usable_stream_maxes,
+            "usable_snr_threshold_db": self.params["usable_snr_threshold_db"],
+            "target_rate_bps": target_rate_bps,
+            "outage_events": outage_events,
+            "service_availability": service_availability,
+            "heatmap_frequency_offsets_hz": heatmap_offsets_hz,
+            "heatmap_spectral_efficiency": np.asarray(
+                heatmap_efficiency_rows, dtype=np.float32
+            ).reshape(-1, n_frequency_bins),
+            "heatmap_channel_gain": np.asarray(
+                heatmap_gain_rows, dtype=np.float32
+            ).reshape(-1, n_frequency_bins),
+            "heatmap_usable_streams": np.asarray(
+                heatmap_usable_rows, dtype=np.float32
+            ).reshape(-1, n_frequency_bins),
+            "sounding_interval_s": sounding_interval_s,
             "subcarrier_spacing_hz": spacing_hz,
             "n_tx": n_tx,
             "n_rx": n_rx,
@@ -584,6 +714,7 @@ class MIMOCapacityWorker(QThread):
             "occupied_bandwidth_hz": occupied_bandwidth_hz,
             "backend": "CuPy (GPU)" if use_gpu else "NumPy (CPU)",
             "output_path": str(output_path),
+            "outage_path": str(outage_path),
         }
 
 
@@ -801,6 +932,21 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         self.noise_figure_spinbox.setValue(7.0)
         self.noise_figure_spinbox.setSuffix(" dB")
 
+        self.target_rate_spinbox = QDoubleSpinBox()
+        self.target_rate_spinbox.setDecimals(3)
+        self.target_rate_spinbox.setRange(0.001, 1e6)
+        self.target_rate_spinbox.setValue(100.0)
+        self.target_rate_spinbox.setSuffix(" Mbps")
+        self.target_rate_spinbox.setToolTip("Capacity below this rate counts as a service outage")
+
+        self.usable_snr_spinbox = QDoubleSpinBox()
+        self.usable_snr_spinbox.setRange(-30.0, 60.0)
+        self.usable_snr_spinbox.setValue(0.0)
+        self.usable_snr_spinbox.setSuffix(" dB")
+        self.usable_snr_spinbox.setToolTip(
+            "Minimum per-eigenmode SNR for a spatial stream to count as usable"
+        )
+
         self.acceleration_group = QButtonGroup(self)
         self.use_cpu_radio = QRadioButton("Use CPU (NumPy)")
         self.use_gpu_radio = QRadioButton("Use GPU (CuPy / CUDA)")
@@ -830,6 +976,8 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         form.addRow("Total Tx Power:", self.tx_power_spinbox)
         form.addRow("Thermal Noise Density:", self.noise_density_spinbox)
         form.addRow("Receiver Noise Figure:", self.noise_figure_spinbox)
+        form.addRow("Target Service Rate:", self.target_rate_spinbox)
+        form.addRow("Usable Stream SNR:", self.usable_snr_spinbox)
         form.addRow("Acceleration:", acceleration_widget)
         form.addRow("", self.ofdm_summary_label)
 
@@ -850,12 +998,26 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         )
         layout.addWidget(self.stream_capacity_checkbox)
 
+        self.usable_streams_checkbox = QCheckBox("Usable Stream Count")
+        self.usable_streams_checkbox.setChecked(True)
+        self.usable_streams_checkbox.setToolTip(
+            "Plot how many eigenmodes meet the usable stream SNR threshold over scenario time"
+        )
+        layout.addWidget(self.usable_streams_checkbox)
+
         self.capacity_cdf_checkbox = QCheckBox("Capacity CDF (Outage Capacity)")
         self.capacity_cdf_checkbox.setChecked(True)
         self.capacity_cdf_checkbox.setToolTip(
             "Plot the capacity distribution across all soundings, with 10% and 50% outage markers"
         )
         layout.addWidget(self.capacity_cdf_checkbox)
+
+        self.outage_duration_checkbox = QCheckBox("Service Outage Duration")
+        self.outage_duration_checkbox.setChecked(True)
+        self.outage_duration_checkbox.setToolTip(
+            "Plot the start time and duration of every interval below the target service rate"
+        )
+        layout.addWidget(self.outage_duration_checkbox)
 
         self.delay_spread_checkbox = QCheckBox("Delay Spread and Coherence Bandwidth")
         self.delay_spread_checkbox.setChecked(True)
@@ -870,6 +1032,13 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             "Plot the correlation between consecutive soundings and the coherence time it implies"
         )
         layout.addWidget(self.coherence_time_checkbox)
+
+        self.heatmap_checkbox = QCheckBox("Time-Frequency Heatmaps")
+        self.heatmap_checkbox.setChecked(True)
+        self.heatmap_checkbox.setToolTip(
+            "Plot channel gain, spectral efficiency, and usable streams across time and subcarrier frequency"
+        )
+        layout.addWidget(self.heatmap_checkbox)
 
         group.setLayout(layout)
         return group
@@ -918,17 +1087,26 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         self.peak_capacity_label = QLabel("--")
         self.mean_efficiency_label = QLabel("--")
         self.mean_rank_label = QLabel("--")
+        self.mean_usable_label = QLabel("--")
+        self.availability_label = QLabel("--")
+        self.longest_outage_label = QLabel("--")
         for label in (
             self.mean_capacity_label,
             self.peak_capacity_label,
             self.mean_efficiency_label,
             self.mean_rank_label,
+            self.mean_usable_label,
+            self.availability_label,
+            self.longest_outage_label,
         ):
             label.setFont(QFont("Arial", 13, QFont.Bold))
         metrics_form.addRow("Mean Capacity:", self.mean_capacity_label)
         metrics_form.addRow("Peak Capacity:", self.peak_capacity_label)
         metrics_form.addRow("Mean Spectral Efficiency:", self.mean_efficiency_label)
         metrics_form.addRow("Mean Effective Rank:", self.mean_rank_label)
+        metrics_form.addRow("Mean Usable Streams:", self.mean_usable_label)
+        metrics_form.addRow("Service Availability:", self.availability_label)
+        metrics_form.addRow("Longest Outage:", self.longest_outage_label)
         metrics_group.setLayout(metrics_form)
         status_layout.addWidget(metrics_group)
         status_tab.setLayout(status_layout)
@@ -1150,6 +1328,8 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             "tx_power_dbm": self.tx_power_spinbox.value(),
             "noise_density_dbm_hz": self.noise_density_spinbox.value(),
             "noise_figure_db": self.noise_figure_spinbox.value(),
+            "target_rate_bps": self.target_rate_spinbox.value() * 1e6,
+            "usable_snr_threshold_db": self.usable_snr_spinbox.value(),
             "use_gpu": self.use_gpu_radio.isChecked(),
         }
 
@@ -1226,6 +1406,20 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         self.peak_capacity_label.setText(f"{np.max(capacities) / 1e9:.3f} Gbps")
         self.mean_efficiency_label.setText(f"{np.mean(efficiencies):.3f} bit/s/Hz/subcarrier")
         self.mean_rank_label.setText(f"{np.mean(ranks):.2f}")
+        self.mean_usable_label.setText(
+            f"{np.mean(payload['usable_stream_mean']):.2f} "
+            f"(SNR \u2265 {payload['usable_snr_threshold_db']:.1f} dB)"
+        )
+        self.availability_label.setText(
+            f"{payload['service_availability'] * 100:.2f}% "
+            f"at {payload['target_rate_bps'] / 1e6:.3f} Mbps"
+        )
+        outage_durations = [end_s - start_s for start_s, end_s in payload["outage_events"]]
+        self.longest_outage_label.setText(
+            f"{max(outage_durations) * 1e3:.3f} ms ({len(outage_durations)} events)"
+            if outage_durations
+            else "None"
+        )
         self.status_log.append(
             f"Complete using {payload['backend']}: {payload['n_tx']} x {payload['n_rx']}, "
             f"{payload['n_subcarriers']} subcarriers."
@@ -1235,6 +1429,7 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             f"{payload['n_soundings_per_frame']} soundings."
         )
         self.status_log.append(f"Time-history CSV: {payload['output_path']}")
+        self.status_log.append(f"Outage events CSV: {payload['outage_path']}")
         self._render_capacity_plot(payload)
         self._tabs.setCurrentIndex(1)
         QTimer.singleShot(0, self._update_capacity_plot_pixmap)
@@ -1252,6 +1447,19 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         temporal_correlation = np.asarray(results.get("temporal_correlation", []), dtype=float)
         coherence_time_ms = np.asarray(results.get("coherence_time_s", []), dtype=float) * 1e3
         subcarrier_spacing_khz = float(results.get("subcarrier_spacing_hz", 0.0)) / 1e3
+        usable_mean = np.asarray(results["usable_stream_mean"], dtype=float)
+        usable_min = np.asarray(results["usable_stream_min"], dtype=float)
+        usable_max = np.asarray(results["usable_stream_max"], dtype=float)
+        usable_snr_db = float(results["usable_snr_threshold_db"])
+        target_rate_gbps = float(results["target_rate_bps"]) / 1e9
+        outage_events = results["outage_events"]
+        service_availability = float(results["service_availability"])
+        heatmap_offsets_mhz = np.asarray(results["heatmap_frequency_offsets_hz"], dtype=float) / 1e6
+        heatmap_efficiency = np.asarray(results["heatmap_spectral_efficiency"], dtype=float)
+        heatmap_gain_db = 10.0 * np.log10(
+            np.maximum(np.asarray(results["heatmap_channel_gain"], dtype=float), 1e-30)
+        )
+        heatmap_usable = np.asarray(results["heatmap_usable_streams"], dtype=float)
         max_rank = min(results["n_tx"], results["n_rx"])
         n_streams = eigenvalues.shape[1] if eigenvalues.ndim == 2 else 0
         link_label = results.get("link_label") or results["link"]
@@ -1266,9 +1474,24 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
         ).strip("_") or "link"
 
         def draw_capacity(axis):
-            axis.plot(scenario_time, capacities_gbps, color=theme["series"]["capacity"], linewidth=1.4)
+            axis.plot(
+                scenario_time,
+                capacities_gbps,
+                color=theme["series"]["capacity"],
+                linewidth=1.4,
+                label="Capacity",
+            )
+            axis.axhline(
+                target_rate_gbps,
+                color=theme["series"]["outage"],
+                linestyle="--",
+                linewidth=1.0,
+                label=f"Target Rate ({target_rate_gbps * 1e3:.3f} Mbps)",
+            )
             axis.set_ylabel("Capacity (Gbps)")
-            axis.set_ylim(0.0, float(np.max(capacities_gbps)) * 1.05 if capacities_gbps.size else 1.0)
+            peak = float(np.max(capacities_gbps)) if capacities_gbps.size else 0.0
+            axis.set_ylim(0.0, max(peak, target_rate_gbps) * 1.05 or 1.0)
+            axis.legend(fontsize=7, loc="upper right")
 
         def draw_eigenvalue_spectrum(axis):
             eigenvalues_db = 10.0 * np.log10(np.maximum(eigenvalues, 1e-300))
@@ -1310,6 +1533,104 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
             axis.set_ylabel("Per-Stream Capacity (Gbps)")
             axis.set_ylim(bottom=0.0)
             axis.legend(fontsize=7, loc="upper right", ncol=2)
+
+        def draw_usable_streams(axis):
+            color = theme["series"]["usable"]
+            axis.fill_between(
+                scenario_time,
+                usable_min,
+                usable_max,
+                color=color,
+                alpha=0.25,
+                linewidth=0,
+                label="Min-Max across Subcarriers",
+            )
+            axis.plot(
+                scenario_time,
+                usable_mean,
+                color=color,
+                linewidth=1.6,
+                label=f"Mean Usable Streams (SNR \u2265 {usable_snr_db:.1f} dB)",
+            )
+            axis.plot(
+                scenario_time,
+                ranks,
+                color=theme["series"]["rank"],
+                linestyle="--",
+                linewidth=1.0,
+                label="Effective Rank",
+            )
+            axis.set_ylabel("Spatial Streams")
+            axis.set_ylim(0.0, max_rank + 0.5)
+            axis.legend(fontsize=7, loc="upper right")
+
+        def draw_outage_duration(axis):
+            color = theme["series"]["outage"]
+            starts_s = np.array([start_s for start_s, _ in outage_events], dtype=float)
+            durations_ms = np.array(
+                [(end_s - start_s) * 1e3 for start_s, end_s in outage_events], dtype=float
+            )
+            if durations_ms.size:
+                axis.vlines(starts_s, 0.0, durations_ms, color=color, linewidth=1.4)
+                axis.plot(starts_s, durations_ms, "o", color=color, markersize=4)
+                axis.set_ylim(0.0, float(np.max(durations_ms)) * 1.25 or 1.0)
+                summary = (
+                    f"Events: {durations_ms.size} | Longest: {np.max(durations_ms):.3f} ms"
+                    f" | Mean: {np.mean(durations_ms):.3f} ms"
+                )
+            else:
+                axis.set_ylim(0.0, 1.0)
+                summary = "No outages below the target rate"
+            axis.text(
+                0.01,
+                0.95,
+                f"Availability: {service_availability * 100:.2f}% at "
+                f"{target_rate_gbps * 1e3:.3f} Mbps\n{summary}",
+                transform=axis.transAxes,
+                va="top",
+                fontsize=8,
+                bbox={
+                    "boxstyle": "round",
+                    "facecolor": axis.get_facecolor(),
+                    "edgecolor": theme["series"]["reference"],
+                    "alpha": 0.85,
+                },
+            )
+            axis.set_ylabel("Outage Duration (ms)")
+            if len(scenario_time) > 1 and scenario_time[-1] > scenario_time[0]:
+                last_end_s = max([scenario_time[-1]] + [end_s for _, end_s in outage_events])
+                margin_s = 0.02 * (last_end_s - scenario_time[0])
+                axis.set_xlim(scenario_time[0] - margin_s, last_end_s + margin_s)
+
+        time_edges = _cell_edges(scenario_time, float(results["sounding_interval_s"]))
+        frequency_edges_mhz = _cell_edges(
+            heatmap_offsets_mhz, float(results["subcarrier_spacing_hz"]) / 1e6
+        )
+
+        def heatmap_drawer(values, colormap, colorbar_label, vmin=None, vmax=None):
+            def draw(axis):
+                mesh = axis.pcolormesh(
+                    time_edges,
+                    frequency_edges_mhz,
+                    values.T,
+                    cmap=colormap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    shading="flat",
+                )
+                axis.figure.colorbar(mesh, ax=axis, label=colorbar_label, pad=0.01)
+                axis.set_ylabel("Offset from fc (MHz)")
+
+            return draw
+
+        finite_gain = heatmap_gain_db[np.isfinite(heatmap_gain_db)]
+        gain_max_db = float(np.max(finite_gain)) if finite_gain.size else 0.0
+        # Percentile floor keeps a few deep nulls from flattening the useful dynamic range.
+        gain_min_db = (
+            max(float(np.percentile(finite_gain, 1.0)), gain_max_db - 80.0)
+            if finite_gain.size
+            else gain_max_db - 80.0
+        )
 
         def draw_condition_number(axis):
             axis.plot(scenario_time, condition_numbers, color=theme["series"]["condition"], linewidth=1.4)
@@ -1424,9 +1745,27 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
                     draw_stream_capacity,
                 )
             )
+        if usable_mean.size and self.usable_streams_checkbox.isChecked():
+            metric_plots.append(
+                (
+                    "usable_streams",
+                    "Usable Stream Count over Scenario Time",
+                    time_label,
+                    draw_usable_streams,
+                )
+            )
         if capacities_gbps.size and self.capacity_cdf_checkbox.isChecked():
             metric_plots.append(
                 ("capacity_cdf", "MIMO OFDM Capacity Distribution", "Capacity (Gbps)", draw_capacity_cdf)
+            )
+        if capacities_gbps.size and self.outage_duration_checkbox.isChecked():
+            metric_plots.append(
+                (
+                    "outage_duration",
+                    "Service Outage Events below Target Rate",
+                    "Outage Start Time (s)",
+                    draw_outage_duration,
+                )
             )
         metric_plots.extend([
             ("condition_number", "Condition Number over Scenario Time", time_label, draw_condition_number),
@@ -1455,6 +1794,44 @@ class MIMOCommunicationAnalysisToolkit(QMainWindow):
                     draw_coherence_time,
                 )
             )
+        if heatmap_efficiency.size and self.heatmap_checkbox.isChecked():
+            metric_plots.extend([
+                (
+                    "heatmap_channel_gain",
+                    "Mean Port Channel Gain over Time and Frequency",
+                    time_label,
+                    heatmap_drawer(
+                        heatmap_gain_db,
+                        "magma",
+                        "Channel Gain (dB)",
+                        vmin=gain_min_db,
+                        vmax=gain_max_db,
+                    ),
+                ),
+                (
+                    "heatmap_spectral_efficiency",
+                    "Spectral Efficiency over Time and Frequency",
+                    time_label,
+                    heatmap_drawer(
+                        heatmap_efficiency,
+                        "viridis",
+                        "Spectral Efficiency (bit/s/Hz)",
+                        vmin=0.0,
+                    ),
+                ),
+                (
+                    "heatmap_usable_streams",
+                    f"Usable Streams (SNR \u2265 {usable_snr_db:.1f} dB) over Time and Frequency",
+                    time_label,
+                    heatmap_drawer(
+                        heatmap_usable,
+                        "cividis",
+                        "Usable Streams",
+                        vmin=0.0,
+                        vmax=float(max_rank),
+                    ),
+                ),
+            ])
 
         fig, axes = plt.subplots(
             len(metric_plots),

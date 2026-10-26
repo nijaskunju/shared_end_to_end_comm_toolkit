@@ -58,6 +58,19 @@
       padding: 10px;
       margin-top: 8px;
     }
+    .flow-figure {
+      margin: 8px 0 16px;
+    }
+    .flow-figure svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .flow-figure figcaption {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 6px;
+    }
   </style>
 </head>
 <body>
@@ -79,14 +92,298 @@
     </div>
 
     <div class="card">
-      <h2>2) Signal Processing Flow (Detailed)</h2>
+      <h2>2) Signal Processing Flow (Simple)</h2>
+      <figure class="flow-figure">
+        <svg viewBox="0 0 1280 720" role="img" aria-labelledby="simpleFlowTitle simpleFlowDesc" xmlns="http://www.w3.org/2000/svg">
+          <title id="simpleFlowTitle">Simplified end-to-end signal processing flow</title>
+          <desc id="simpleFlowDesc">The desired QAM signal is pulse shaped, upconverted, and passed through its channel. Each interferer is generated, upconverted to the same carrier, scaled, and passed through its own channel. Desired signal, interference, and noise are summed, then the receiver estimates and equalizes the channel, synchronizes, downconverts and matched filters, demaps, and computes KPIs.</desc>
+          <defs>
+            <marker id="sArrBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0b5cab"/></marker>
+            <marker id="sArrOrange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e65100"/></marker>
+            <marker id="sArrGrey" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/></marker>
+            <marker id="sArrPurple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5e35b1"/></marker>
+            <style>
+              .s-title { font: 600 28px Segoe UI, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+              .s-t1 { font: 600 18px Segoe UI, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+              .s-t2 { font: 14.5px Segoe UI, Arial, sans-serif; fill: #374151; text-anchor: middle; }
+              .s-grp { font: 600 16px Segoe UI, Arial, sans-serif; fill: #e65100; }
+              .s-lbl { font: italic 15px Segoe UI, Arial, sans-serif; fill: #374151; }
+              .s-note { font: 14px Segoe UI, Arial, sans-serif; fill: #4b5563; text-anchor: middle; }
+              .s-sub { font-size: 10.5px; }
+              .s-tx { fill: #e8f1fb; stroke: #0b5cab; stroke-width: 2; }
+              .s-chan { fill: #eef7ee; stroke: #2e7d32; stroke-width: 2; }
+              .s-intf { fill: #fff3e0; stroke: #e65100; stroke-width: 2; }
+              .s-noise { fill: #f3f4f6; stroke: #6b7280; stroke-width: 2; }
+              .s-rx { fill: #ede7f6; stroke: #5e35b1; stroke-width: 2; }
+              .s-meas { fill: #ecfeff; stroke: #0e7490; stroke-width: 2; }
+              .s-wBlue { stroke: #0b5cab; stroke-width: 2.5; fill: none; }
+              .s-wOrange { stroke: #e65100; stroke-width: 2.5; fill: none; stroke-dasharray: 8 5; }
+              .s-wGrey { stroke: #6b7280; stroke-width: 2.5; fill: none; }
+              .s-wPurple { stroke: #5e35b1; stroke-width: 2.5; fill: none; }
+            </style>
+          </defs>
+          <rect x="0" y="0" width="1280" height="720" fill="#ffffff"/>
+          <text class="s-title" x="640" y="52">End-to-End Signal Processing Flow</text>
+
+          <!-- Desired transmit row -->
+          <rect class="s-tx" x="30" y="95" width="200" height="90" rx="10"/>
+          <text class="s-t1" x="130" y="134">QAM Mapping</text>
+          <text class="s-t2" x="130" y="158">bits → Gray M-QAM</text>
+          <path class="s-wBlue" d="M 230 140 H 273" marker-end="url(#sArrBlue)"/>
+          <rect class="s-tx" x="275" y="95" width="200" height="90" rx="10"/>
+          <text class="s-t1" x="375" y="134">RRC Pulse Shaping</text>
+          <text class="s-t2" x="375" y="158">upsample, roll-off β</text>
+          <path class="s-wBlue" d="M 475 140 H 518" marker-end="url(#sArrBlue)"/>
+          <rect class="s-tx" x="520" y="95" width="200" height="90" rx="10"/>
+          <text class="s-t1" x="620" y="134">Upconversion</text>
+          <text class="s-t2" x="620" y="158">carrier fc (or hop)</text>
+          <path class="s-wBlue" d="M 720 140 H 763" marker-end="url(#sArrBlue)"/>
+          <rect class="s-chan" x="765" y="95" width="200" height="90" rx="10"/>
+          <text class="s-t1" x="865" y="125">Desired Channel</text>
+          <text class="s-t2" x="865" y="149">h(t) from H(f)</text>
+          <text class="s-t2" x="865" y="170">STK/RFCM or RST/RSP</text>
+          <path class="s-wBlue" d="M 965 140 H 1060 V 295" marker-end="url(#sArrBlue)"/>
+
+          <!-- Interference row -->
+          <rect x="20" y="235" width="955" height="180" rx="14" fill="#fffaf3" stroke="#e65100" stroke-width="1.8" stroke-dasharray="9 6"/>
+          <text class="s-grp" x="40" y="300">Interference Leg</text>
+          <text class="s-grp" x="40" y="324">repeated for each</text>
+          <text class="s-grp" x="40" y="348">enabled source k</text>
+          <rect class="s-intf" x="275" y="280" width="200" height="90" rx="10"/>
+          <text class="s-t1" x="375" y="319">Interferer Waveform</text>
+          <text class="s-t2" x="375" y="343">QAM · CW tone · noise</text>
+          <path class="s-wOrange" d="M 475 325 H 518" marker-end="url(#sArrOrange)"/>
+          <rect class="s-intf" x="520" y="280" width="200" height="90" rx="10"/>
+          <text class="s-t1" x="620" y="319">Upconvert + Scale</text>
+          <text class="s-t2" x="620" y="343">same fc, power P<tspan class="s-sub" baseline-shift="sub">k</tspan></text>
+          <path class="s-wOrange" d="M 720 325 H 763" marker-end="url(#sArrOrange)"/>
+          <rect class="s-chan" x="765" y="280" width="200" height="90" rx="10"/>
+          <text class="s-t1" x="865" y="310">Interferer Channel</text>
+          <text class="s-t2" x="865" y="334">h<tspan class="s-sub" baseline-shift="sub">I,k</tspan>(t) to same Rx</text>
+          <text class="s-t2" x="865" y="355">STK/RFCM or RST/RSP</text>
+          <path class="s-wOrange" d="M 965 325 H 1030" marker-end="url(#sArrOrange)"/>
+
+          <!-- Summation and noise -->
+          <circle cx="1060" cy="325" r="28" fill="#ffffff" stroke="#111827" stroke-width="2"/>
+          <text class="s-t1" x="1060" y="333" style="font-size: 26px;">Σ</text>
+          <rect class="s-noise" x="1110" y="280" width="140" height="90" rx="10"/>
+          <text class="s-t1" x="1180" y="312">Noise</text>
+          <text class="s-t2" x="1180" y="335">AWGN or</text>
+          <text class="s-t2" x="1180" y="356">N<tspan class="s-sub" baseline-shift="sub">0</tspan>·B<tspan class="s-sub" baseline-shift="sub">eq</tspan>·F</text>
+          <path class="s-wGrey" d="M 1110 325 H 1090" marker-end="url(#sArrGrey)"/>
+          <path class="s-wPurple" d="M 1060 353 V 468" marker-end="url(#sArrPurple)"/>
+          <text class="s-lbl" x="1072" y="420">y<tspan class="s-sub" baseline-shift="sub">S</tspan> + y<tspan class="s-sub" baseline-shift="sub">I</tspan> + n</text>
+
+          <!-- Receive row (right to left) -->
+          <rect class="s-rx" x="965" y="470" width="190" height="90" rx="10"/>
+          <text class="s-t1" x="1060" y="509">Channel Est. + EQ</text>
+          <text class="s-t2" x="1060" y="533">pilot LS / Wiener</text>
+          <path class="s-wPurple" d="M 965 515 H 937" marker-end="url(#sArrPurple)"/>
+          <rect class="s-rx" x="745" y="470" width="190" height="90" rx="10"/>
+          <text class="s-t1" x="840" y="509">Synchronization</text>
+          <text class="s-t2" x="840" y="533">cross-correlation</text>
+          <path class="s-wPurple" d="M 745 515 H 717" marker-end="url(#sArrPurple)"/>
+          <rect class="s-rx" x="525" y="470" width="190" height="90" rx="10"/>
+          <text class="s-t1" x="620" y="509">Downconvert + MF</text>
+          <text class="s-t2" x="620" y="533">RRC, symbol sampling</text>
+          <path class="s-wPurple" d="M 525 515 H 497" marker-end="url(#sArrPurple)"/>
+          <rect class="s-rx" x="305" y="470" width="190" height="90" rx="10"/>
+          <text class="s-t1" x="400" y="509">Demapping</text>
+          <text class="s-t2" x="400" y="533">Gray M-QAM → bits</text>
+          <path class="s-wPurple" d="M 305 515 H 277" marker-end="url(#sArrPurple)"/>
+          <rect class="s-meas" x="85" y="470" width="190" height="90" rx="10"/>
+          <text class="s-t1" x="180" y="509">KPIs</text>
+          <text class="s-t2" x="180" y="533">BER · EVM · SNR/SIR/SINR</text>
+
+          <!-- Legend and note -->
+          <g transform="translate(180 625)">
+            <line class="s-wBlue" x1="0" y1="0" x2="40" y2="0"/><text class="s-lbl" x="50" y="5">Desired signal</text>
+            <rect class="s-chan" x="190" y="-9" width="40" height="18" rx="4"/><text class="s-lbl" x="240" y="5">STK/RFCM channel</text>
+            <line class="s-wOrange" x1="395" y1="0" x2="435" y2="0"/><text class="s-lbl" x="445" y="5">Interference</text>
+            <line class="s-wGrey" x1="555" y1="0" x2="595" y2="0"/><text class="s-lbl" x="605" y="5">Noise</text>
+            <line class="s-wPurple" x1="665" y1="0" x2="705" y2="0"/><text class="s-lbl" x="715" y="5">Receiver chain</text>
+          </g>
+          <text class="s-note" x="640" y="680">Repeated every scenario frame. SNR, SIR, and SINR are measured before equalization; BER, EVM, and effective SNR after demodulation.</text>
+        </svg>
+        <figcaption>Simplified one-slide view of the per-frame processing chain. The 16:9 figure can be copied directly onto a presentation slide. See Section 2.1 for the detailed flow.</figcaption>
+      </figure>
+    </div>
+
+    <div class="card">
+      <h2>2.1) Signal Processing Flow (Detailed)</h2>
+      <figure class="flow-figure">
+        <svg viewBox="0 0 1060 1125" role="img" aria-labelledby="flowTitle flowDesc" xmlns="http://www.w3.org/2000/svg">
+          <title id="flowTitle">End-to-end signal processing flow with interference legs</title>
+          <desc id="flowDesc">Per-frame flow: the desired channel leg and transmit chain meet at channel convolution; each enabled interference source is generated, power scaled, and convolved with its own channel, then all are summed with the desired received signal before noise injection, channel estimation, equalization, synchronization, downconversion, matched filtering, and KPI extraction.</desc>
+          <defs>
+            <marker id="arrBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0b5cab"/></marker>
+            <marker id="arrGreen" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker>
+            <marker id="arrOrange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e65100"/></marker>
+            <marker id="arrGrey" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/></marker>
+            <marker id="arrTeal" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0e7490"/></marker>
+            <marker id="arrPurple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5e35b1"/></marker>
+            <style>
+              .t1 { font: 600 13px Segoe UI, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+              .t2 { font: 11.5px Segoe UI, Arial, sans-serif; fill: #374151; text-anchor: middle; }
+              .lbl { font: italic 11.5px Segoe UI, Arial, sans-serif; fill: #374151; }
+              .sub { font-size: 8.5px; }
+              .grp { font: 600 12.5px Segoe UI, Arial, sans-serif; fill: #e65100; }
+              .src { fill: #f1f5f9; stroke: #334155; stroke-width: 1.5; }
+              .chan { fill: #eef7ee; stroke: #2e7d32; stroke-width: 1.5; }
+              .tx { fill: #e8f1fb; stroke: #0b5cab; stroke-width: 1.5; }
+              .intf { fill: #fff3e0; stroke: #e65100; stroke-width: 1.5; }
+              .noise { fill: #f3f4f6; stroke: #6b7280; stroke-width: 1.5; }
+              .rx { fill: #ede7f6; stroke: #5e35b1; stroke-width: 1.5; }
+              .meas { fill: #ecfeff; stroke: #0e7490; stroke-width: 1.5; }
+              .wBlue { stroke: #0b5cab; stroke-width: 2; fill: none; }
+              .wGreen { stroke: #2e7d32; stroke-width: 2; fill: none; }
+              .wOrange { stroke: #e65100; stroke-width: 2; fill: none; stroke-dasharray: 7 4; }
+              .wGrey { stroke: #6b7280; stroke-width: 2; fill: none; }
+              .wTeal { stroke: #0e7490; stroke-width: 1.6; fill: none; stroke-dasharray: 2 4; }
+              .wPurple { stroke: #5e35b1; stroke-width: 2; fill: none; }
+            </style>
+          </defs>
+
+          <!-- Channel source -->
+          <rect class="src" x="200" y="16" width="660" height="56" rx="8"/>
+          <text class="t1" x="530" y="39">Channel Source per Frame: RST/RSP Archive or Live STK/RFCM link.Compute(t)</text>
+          <text class="t2" x="530" y="59">Desired and interferer link responses are taken at the same scenario frame time</text>
+          <path class="wGreen" d="M 230 72 V 90 H 131 V 108" marker-end="url(#arrGreen)"/>
+          <path class="wGreen" d="M 840 72 V 90 H 935 V 138" marker-end="url(#arrGreen)"/>
+
+          <!-- Desired channel leg -->
+          <rect class="chan" x="16" y="110" width="230" height="58" rx="8"/>
+          <text class="t1" x="131" y="134">1. H(f) Extraction</text>
+          <text class="t2" x="131" y="153">desired link, Tx i → Rx j</text>
+          <path class="wGreen" d="M 131 168 V 198" marker-end="url(#arrGreen)"/>
+          <rect class="tx" x="16" y="200" width="230" height="58" rx="8"/>
+          <text class="t1" x="131" y="224">2. FIR Synthesis</text>
+          <text class="t2" x="131" y="243">IFFT of H(f) → h(t)</text>
+          <path class="wBlue" d="M 131 258 V 499 H 298" marker-end="url(#arrBlue)"/>
+          <text class="lbl" x="140" y="490">h(t)</text>
+
+          <!-- Desired transmit chain -->
+          <rect class="tx" x="300" y="110" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="134">3. QAM Generation</text>
+          <text class="t2" x="430" y="153">random bits → Gray-coded M-QAM</text>
+          <path class="wBlue" d="M 430 168 V 198" marker-end="url(#arrBlue)"/>
+          <rect class="tx" x="300" y="200" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="224">4. RRC Pulse Shaping</text>
+          <text class="t2" x="430" y="243">upsample × sps, roll-off β</text>
+          <path class="wBlue" d="M 430 258 V 288" marker-end="url(#arrBlue)"/>
+          <rect class="tx" x="300" y="290" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="314">5. Upconversion</text>
+          <text class="t2" x="430" y="333">× exp(j2π·fc·t); fc hops per frame</text>
+          <path class="wBlue" d="M 430 348 V 378" marker-end="url(#arrBlue)"/>
+          <rect class="tx" x="300" y="380" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="404">Tx Power Scaling</text>
+          <text class="t2" x="430" y="423">Power/Noise mode: mean power = P<tspan class="sub" baseline-shift="sub">Tx</tspan></text>
+          <path class="wBlue" d="M 430 438 V 468" marker-end="url(#arrBlue)"/>
+          <rect class="tx" x="300" y="470" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="494">6. Channel Convolution</text>
+          <text class="t2" x="430" y="513">y<tspan class="sub" baseline-shift="sub">S</tspan> = h ⊛ x</text>
+          <path class="wBlue" d="M 430 528 V 552" marker-end="url(#arrBlue)"/>
+          <text class="lbl" x="440" y="546">y<tspan class="sub" baseline-shift="sub">S</tspan></text>
+
+          <!-- Interference leg -->
+          <rect x="620" y="100" width="424" height="390" rx="12" fill="#fffaf3" stroke="#e65100" stroke-width="1.5" stroke-dasharray="8 5"/>
+          <text class="grp" x="636" y="124">Interference Leg — repeated for each enabled source k</text>
+          <rect class="intf" x="636" y="140" width="190" height="58" rx="8"/>
+          <text class="t1" x="731" y="164">Interferer Waveform</text>
+          <text class="t2" x="731" y="183">QAM | CW tone | wideband noise</text>
+          <path class="wOrange" d="M 731 198 V 228" marker-end="url(#arrOrange)"/>
+          <rect class="intf" x="636" y="230" width="190" height="58" rx="8"/>
+          <text class="t1" x="731" y="254">Upconversion + Power</text>
+          <text class="t2" x="731" y="273">× exp(j2π·fc·t), scaled to P<tspan class="sub" baseline-shift="sub">k</tspan></text>
+          <path class="wOrange" d="M 731 288 V 318" marker-end="url(#arrOrange)"/>
+          <rect class="chan" x="840" y="140" width="190" height="58" rx="8"/>
+          <text class="t1" x="935" y="164">H<tspan class="sub" baseline-shift="sub">I,k</tspan>(f) Extraction</text>
+          <text class="t2" x="935" y="183">interferer Tx 1 → same Rx j</text>
+          <path class="wGreen" d="M 935 198 V 228" marker-end="url(#arrGreen)"/>
+          <rect class="intf" x="840" y="230" width="190" height="58" rx="8"/>
+          <text class="t1" x="935" y="254">FIR Synthesis</text>
+          <text class="t2" x="935" y="273">IFFT → h<tspan class="sub" baseline-shift="sub">I,k</tspan>(t)</text>
+          <path class="wOrange" d="M 935 288 V 318" marker-end="url(#arrOrange)"/>
+          <rect class="intf" x="636" y="320" width="394" height="58" rx="8"/>
+          <text class="t1" x="833" y="344">Interference Convolution</text>
+          <text class="t2" x="833" y="363">y<tspan class="sub" baseline-shift="sub">I,k</tspan> = h<tspan class="sub" baseline-shift="sub">I,k</tspan> ⊛ i<tspan class="sub" baseline-shift="sub">k</tspan>   (co-channel at active fc)</text>
+          <path class="wOrange" d="M 833 378 V 408" marker-end="url(#arrOrange)"/>
+          <rect class="intf" x="636" y="410" width="394" height="58" rx="8"/>
+          <text class="t1" x="833" y="434">Sum over Enabled Sources</text>
+          <text class="t2" x="833" y="453">y<tspan class="sub" baseline-shift="sub">I</tspan> = Σ<tspan class="sub" baseline-shift="sub">k</tspan> y<tspan class="sub" baseline-shift="sub">I,k</tspan></text>
+          <path class="wOrange" d="M 833 468 V 570 H 448" marker-end="url(#arrOrange)"/>
+          <text class="lbl" x="700" y="562">y<tspan class="sub" baseline-shift="sub">I</tspan></text>
+
+          <!-- Summation and noise -->
+          <circle cx="430" cy="570" r="16" fill="#ffffff" stroke="#111827" stroke-width="1.5"/>
+          <text class="t1" x="430" y="575">+</text>
+          <text class="lbl" x="336" y="566">y<tspan class="sub" baseline-shift="sub">S</tspan> + y<tspan class="sub" baseline-shift="sub">I</tspan></text>
+          <path class="wBlue" d="M 430 586 V 647" marker-end="url(#arrBlue)"/>
+          <rect class="noise" x="16" y="636" width="230" height="58" rx="8"/>
+          <text class="t1" x="131" y="660">7. Noise Injection</text>
+          <text class="t2" x="131" y="679">AWGN at SNR, or P<tspan class="sub" baseline-shift="sub">N</tspan> = N₀·B<tspan class="sub" baseline-shift="sub">eq</tspan>·F</text>
+          <path class="wGrey" d="M 246 665 H 412" marker-end="url(#arrGrey)"/>
+          <text class="lbl" x="300" y="657">n(t)</text>
+          <circle cx="430" cy="665" r="16" fill="#ffffff" stroke="#111827" stroke-width="1.5"/>
+          <text class="t1" x="430" y="670">+</text>
+
+          <!-- Pre-equalization measurement -->
+          <rect class="meas" x="636" y="604" width="394" height="72" rx="8"/>
+          <text class="t1" x="833" y="628">Physical SNR / SIR / SINR (pre-equalization)</text>
+          <text class="t2" x="833" y="648">SNR = P<tspan class="sub" baseline-shift="sub">S</tspan>/P<tspan class="sub" baseline-shift="sub">N</tspan>,   SIR = P<tspan class="sub" baseline-shift="sub">S</tspan>/P<tspan class="sub" baseline-shift="sub">I</tspan></text>
+          <text class="t2" x="833" y="665">SINR = P<tspan class="sub" baseline-shift="sub">S</tspan>/(P<tspan class="sub" baseline-shift="sub">I</tspan> + P<tspan class="sub" baseline-shift="sub">N</tspan>)</text>
+          <path class="wTeal" d="M 446 665 H 634" marker-end="url(#arrTeal)"/>
+          <text class="lbl" x="500" y="657">P<tspan class="sub" baseline-shift="sub">S</tspan>, P<tspan class="sub" baseline-shift="sub">I</tspan>, P<tspan class="sub" baseline-shift="sub">N</tspan></text>
+          <path class="wTeal" d="M 833 676 V 759 H 562" marker-end="url(#arrTeal)"/>
+          <text class="lbl" x="600" y="751">SINR sets estimation / Wiener SNR</text>
+          <path class="wTeal" d="M 1000 676 V 998" marker-end="url(#arrTeal)"/>
+
+          <!-- Receiver chain -->
+          <path class="wPurple" d="M 430 681 V 728" marker-end="url(#arrPurple)"/>
+          <rect class="rx" x="300" y="730" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="754">8. Channel Estimation + EQ</text>
+          <text class="t2" x="430" y="773">pilot LS/Wiener ĥ; Wiener deconvolution</text>
+          <rect class="tx" x="16" y="730" width="230" height="58" rx="8"/>
+          <text class="t1" x="131" y="754">Pilot Reference</text>
+          <text class="t2" x="131" y="773">pilots ⊛ h(t) + noise at SINR</text>
+          <path class="wBlue" d="M 246 759 H 298" marker-end="url(#arrBlue)"/>
+          <path class="wBlue" d="M 16 229 H 6 V 759 H 14" stroke-dasharray="3 3" marker-end="url(#arrBlue)"/>
+          <path class="wPurple" d="M 430 788 V 818" marker-end="url(#arrPurple)"/>
+          <rect class="rx" x="300" y="820" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="844">9. Synchronization</text>
+          <text class="t2" x="430" y="863">cross-correlation timing alignment</text>
+          <path class="wPurple" d="M 430 878 V 908" marker-end="url(#arrPurple)"/>
+          <rect class="rx" x="300" y="910" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="934">10. Downconversion + Matched Filter</text>
+          <text class="t2" x="430" y="953">× exp(−j2π·fc·t), RRC, symbol sampling</text>
+          <path class="wPurple" d="M 430 968 V 998" marker-end="url(#arrPurple)"/>
+          <rect class="rx" x="300" y="1000" width="260" height="58" rx="8"/>
+          <text class="t1" x="430" y="1024">11. Decision and KPIs</text>
+          <text class="t2" x="430" y="1043">Gray demap → BER, theory BER, EVM, SNRs</text>
+          <path class="wPurple" d="M 560 1029 H 634" marker-end="url(#arrPurple)"/>
+          <rect class="meas" x="636" y="1000" width="394" height="58" rx="8"/>
+          <text class="t1" x="833" y="1024">Per-Frame and Epoch Outputs</text>
+          <text class="t2" x="833" y="1043">constellation, spectra, MP4, epoch GIFs, KPI labels</text>
+
+          <!-- Legend -->
+          <g transform="translate(16 1090)">
+            <line class="wBlue" x1="0" y1="0" x2="34" y2="0"/><text class="lbl" x="42" y="4">Desired signal</text>
+            <line class="wGreen" x1="150" y1="0" x2="184" y2="0"/><text class="lbl" x="192" y="4">STK/RFCM channel</text>
+            <line class="wOrange" x1="345" y1="0" x2="379" y2="0"/><text class="lbl" x="387" y="4">Interference leg</text>
+            <line class="wGrey" x1="510" y1="0" x2="544" y2="0"/><text class="lbl" x="552" y="4">Noise</text>
+            <line class="wPurple" x1="615" y1="0" x2="649" y2="0"/><text class="lbl" x="657" y="4">Receiver chain</text>
+            <line class="wTeal" x1="775" y1="0" x2="809" y2="0"/><text class="lbl" x="817" y="4">Measurement / control</text>
+          </g>
+        </svg>
+        <figcaption>Per-frame processing flow. Each enabled interference source is generated, scaled to its own transmit power, and convolved with its own RFCM channel to the same receive antenna. All interference is summed with the desired received signal before noise injection, so equalization, synchronization, and demodulation all see the combined waveform. SNR, SIR, and SINR are measured from the separate signal, interference, and noise powers before equalization. Interferer waveforms are upconverted to the same active carrier fc as the desired signal (following the per-frame hop when frequency hopping is enabled), so they are co-channel interference.</figcaption>
+      </figure>
       <ol>
         <li><b>H(f) extraction:</b> For each frame, the selected Tx-Rx response vector is read from channel file.</li>
         <li><b>FIR synthesis:</b> A finite impulse response is derived from H(f) to obtain time-domain channel memory.</li>
         <li><b>QAM generation:</b> Random bits are mapped to QAM symbols with Gray coding to reduce bit-error sensitivity for nearest-neighbor symbol errors.</li>
         <li><b>Pulse shaping:</b> RRC filtering controls inter-symbol interference and spectral occupancy.</li>
         <li><b>Upconversion:</b> Baseband symbols are shifted to RF using configured carrier frequency, or per-frame hopping carrier when hopping is enabled.</li>
-        <li><b>Channel convolution:</b> RF transmit sequence is filtered by h(t), producing received RF signal.</li>
+        <li><b>Channel convolution:</b> RF transmit sequence is filtered by h(t), producing received RF signal. When interference sources are enabled, each interferer waveform is upconverted to the same active carrier, power-scaled, convolved with its own channel FIR to the same receive antenna, and summed with the desired received signal.</li>
         <li><b>Noise injection:</b>
           <ul>
             <li>SNR mode: AWGN level is set by user SNR.</li>
@@ -177,7 +474,7 @@
     <div class="card">
       <h2>Interference Sources</h2>
       <p>For a selected RFCM link, the toolkit identifies other links terminating at the same receiver. Enable any candidate in the <b>Interference Sources</b> table and select its waveform and transmit power. The desired and interfering RFCM channels are computed at the same scenario time and their complex received waveforms are summed before noise, channel estimation, equalization, and decoding.</p>
-      <p>The status panel reports physical SNR, SIR, and SINR. The constellation and BER therefore show the effect of the configured interference. The current waveform choices are QAM, CW tone, and wideband complex noise. QAM interferers use independently randomized symbols and currently inherit the intended signal's QAM order and timing settings.</p>
+      <p>The status panel reports physical SNR, SIR, and SINR. The constellation and BER therefore show the effect of the configured interference. The current waveform choices are QAM, CW tone, and wideband complex noise. QAM interferers use independently randomized symbols and currently inherit the intended signal's QAM order and timing settings. Every interferer is upconverted to the intended signal's active carrier frequency, so it is co-channel: a CW tone sits at the carrier, and QAM and wideband noise overlap the intended signal's band. When frequency hopping is enabled, interferers follow the same per-frame hop, which models a worst-case follower jammer or co-channel user.</p>
     </div>
 
     <div class="card">

@@ -59,6 +59,11 @@
       margin-top: 8px;
     }
   </style>
+  <style>
+    .flow-figure { margin: 8px 0 16px; }
+    .flow-figure svg { width: 100%; height: auto; display: block; }
+    .flow-figure figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  </style>
 </head>
 <body>
   <div class="wrap">
@@ -120,6 +125,290 @@
     </div>
 
     <div class="card">
+      <h2>3.1) Signal Processing Flow (Simple)</h2>
+      <figure class="flow-figure">
+        <svg viewBox="0 0 1280 720" role="img" aria-labelledby="msTitle msDesc" xmlns="http://www.w3.org/2000/svg">
+          <title id="msTitle">Simplified MIMO KPI processing flow</title>
+          <desc id="msDesc">For every sounding, the channel from STK/RFCM or an RST/RSP archive is resampled onto the OFDM grid, analyzed per subcarrier with Gram-matrix eigen-analysis and log-determinant capacity, and combined with delay and Doppler metrics. Per-sample metrics are accumulated into a time history, reduced to scenario statistics, and written to plots, CSV files, and the KPI summary.</desc>
+          <defs>
+            <marker id="msArrGreen" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker>
+            <marker id="msArrBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0b5cab"/></marker>
+            <marker id="msArrPurple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5e35b1"/></marker>
+            <marker id="msArrGrey" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/></marker>
+            <marker id="msArrOrange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e65100"/></marker>
+            <style>
+              .ms-title { font: 600 28px Segoe UI, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+              .ms-t1 { font: 600 18px Segoe UI, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+              .ms-t2 { font: 14.5px Segoe UI, Arial, sans-serif; fill: #374151; text-anchor: middle; }
+              .ms-grp { font: 600 16px Segoe UI, Arial, sans-serif; fill: #475569; }
+              .ms-lbl { font: italic 15px Segoe UI, Arial, sans-serif; fill: #374151; }
+              .ms-note { font: 14px Segoe UI, Arial, sans-serif; fill: #4b5563; text-anchor: middle; }
+              .ms-sub { font-size: 10.5px; }
+              .ms-chan { fill: #eef7ee; stroke: #2e7d32; stroke-width: 2; }
+              .ms-tx { fill: #e8f1fb; stroke: #0b5cab; stroke-width: 2; }
+              .ms-mimo { fill: #ede7f6; stroke: #5e35b1; stroke-width: 2; }
+              .ms-dd { fill: #f3f4f6; stroke: #6b7280; stroke-width: 2; }
+              .ms-agg { fill: #fff3e0; stroke: #e65100; stroke-width: 2; }
+              .ms-out { fill: #ecfeff; stroke: #0e7490; stroke-width: 2; }
+              .ms-wGreen { stroke: #2e7d32; stroke-width: 2.5; fill: none; }
+              .ms-wBlue { stroke: #0b5cab; stroke-width: 2.5; fill: none; }
+              .ms-wPurple { stroke: #5e35b1; stroke-width: 2.5; fill: none; }
+              .ms-wGrey { stroke: #6b7280; stroke-width: 2.5; fill: none; }
+              .ms-wOrange { stroke: #e65100; stroke-width: 2.5; fill: none; }
+            </style>
+          </defs>
+          <rect x="0" y="0" width="1280" height="720" fill="#ffffff"/>
+          <text class="ms-title" x="640" y="45">MIMO KPI Processing Flow</text>
+
+          <!-- Per-sounding group -->
+          <rect x="25" y="68" width="1230" height="300" rx="14" fill="#fafafa" stroke="#64748b" stroke-width="1.8" stroke-dasharray="9 6"/>
+          <text class="ms-grp" x="45" y="92">Per sounding — repeated for every frame × sounding</text>
+
+          <rect class="ms-chan" x="45" y="105" width="260" height="90" rx="10"/>
+          <text class="ms-t1" x="175" y="136">Channel Source</text>
+          <text class="ms-t2" x="175" y="160">STK/RFCM link.Compute(t)</text>
+          <text class="ms-t2" x="175" y="181">or RST/RSP archive → H(f)</text>
+          <path class="ms-wGreen" d="M 305 150 H 353" marker-end="url(#msArrGreen)"/>
+
+          <rect class="ms-tx" x="355" y="105" width="260" height="90" rx="10"/>
+          <text class="ms-t1" x="485" y="136">OFDM Resampling</text>
+          <text class="ms-t2" x="485" y="160">12·RB subcarriers at SCS</text>
+          <text class="ms-t2" x="485" y="181">band-limited → H<tspan class="ms-sub" baseline-shift="sub">k</tspan> (N<tspan class="ms-sub" baseline-shift="sub">r</tspan> × N<tspan class="ms-sub" baseline-shift="sub">t</tspan>)</text>
+          <path class="ms-wBlue" d="M 615 150 H 663" marker-end="url(#msArrBlue)"/>
+          <path class="ms-wGrey" d="M 485 195 V 253" marker-end="url(#msArrGrey)"/>
+
+          <rect class="ms-mimo" x="665" y="105" width="260" height="90" rx="10"/>
+          <text class="ms-t1" x="795" y="136">Spatial Eigen-Analysis</text>
+          <text class="ms-t2" x="795" y="160">Gram matrix G<tspan class="ms-sub" baseline-shift="sub">k</tspan> = H<tspan class="ms-sub" baseline-shift="sub">k</tspan>H<tspan class="ms-sub" baseline-shift="super">H</tspan><tspan class="ms-sub" baseline-shift="sub">k</tspan></text>
+          <text class="ms-t2" x="795" y="181">eigenvalues λ<tspan class="ms-sub" baseline-shift="sub">i,k</tspan></text>
+          <path class="ms-wPurple" d="M 925 150 H 973" marker-end="url(#msArrPurple)"/>
+          <path class="ms-wPurple" d="M 795 195 V 253" marker-end="url(#msArrPurple)"/>
+
+          <rect class="ms-mimo" x="975" y="105" width="260" height="90" rx="10"/>
+          <text class="ms-t1" x="1105" y="136">Capacity &amp; Streams</text>
+          <text class="ms-t2" x="1105" y="160">C = Δf Σ<tspan class="ms-sub" baseline-shift="sub">k</tspan> log₂ det(I + γG<tspan class="ms-sub" baseline-shift="sub">k</tspan>)</text>
+          <text class="ms-t2" x="1105" y="181">per-stream · usable streams</text>
+
+          <text class="ms-lbl" x="60" y="296">Batched over subcarriers</text>
+          <text class="ms-lbl" x="60" y="318">CPU (NumPy) or GPU (CuPy)</text>
+
+          <rect class="ms-dd" x="355" y="255" width="260" height="90" rx="10"/>
+          <text class="ms-t1" x="485" y="286">Delay &amp; Doppler</text>
+          <text class="ms-t2" x="485" y="310">PDP → RMS delay spread, B<tspan class="ms-sub" baseline-shift="sub">c</tspan></text>
+          <text class="ms-t2" x="485" y="331">sounding correlation → T<tspan class="ms-sub" baseline-shift="sub">c</tspan></text>
+
+          <rect class="ms-mimo" x="665" y="255" width="260" height="90" rx="10"/>
+          <text class="ms-t1" x="795" y="286">Spatial Diagnostics</text>
+          <text class="ms-t2" x="795" y="310">effective rank · condition no.</text>
+          <text class="ms-t2" x="795" y="331">dominant eigenvalue fraction</text>
+
+          <rect class="ms-tx" x="975" y="255" width="260" height="90" rx="10"/>
+          <text class="ms-t1" x="1105" y="286">Link Budget γ</text>
+          <text class="ms-t2" x="1105" y="310">P<tspan class="ms-sub" baseline-shift="sub">Tx</tspan>, N<tspan class="ms-sub" baseline-shift="sub">0</tspan>, noise figure, SCS</text>
+          <text class="ms-t2" x="1105" y="331">equal power per port</text>
+          <path class="ms-wBlue" d="M 1105 255 V 197" marker-end="url(#msArrBlue)"/>
+
+          <!-- Time aggregation and outputs -->
+          <path class="ms-wOrange" d="M 225 368 V 428" marker-end="url(#msArrOrange)"/>
+          <text class="ms-lbl" x="237" y="404">per-sample metrics</text>
+          <rect class="ms-agg" x="45" y="430" width="360" height="100" rx="10"/>
+          <text class="ms-t1" x="225" y="464">Time History</text>
+          <text class="ms-t2" x="225" y="488">chronological frame × sounding</text>
+          <text class="ms-t2" x="225" y="510">scalars + per-subcarrier maps</text>
+          <path class="ms-wOrange" d="M 405 480 H 458" marker-end="url(#msArrOrange)"/>
+
+          <rect class="ms-agg" x="460" y="430" width="360" height="100" rx="10"/>
+          <text class="ms-t1" x="640" y="464">Scenario Statistics</text>
+          <text class="ms-t2" x="640" y="488">capacity CDF · outage events</text>
+          <text class="ms-t2" x="640" y="510">availability · time–frequency heatmaps</text>
+          <path class="ms-wOrange" d="M 820 480 H 873" marker-end="url(#msArrOrange)"/>
+
+          <rect class="ms-out" x="875" y="430" width="360" height="100" rx="10"/>
+          <text class="ms-t1" x="1055" y="464">Outputs</text>
+          <text class="ms-t2" x="1055" y="488">time-history plots + PNG · CSV files</text>
+          <text class="ms-t2" x="1055" y="510">Capacity Summary KPIs</text>
+
+          <rect class="ms-tx" x="460" y="565" width="360" height="60" rx="10"/>
+          <text class="ms-t1" x="640" y="591">Target Service Rate</text>
+          <text class="ms-t2" x="640" y="613">outage when C &lt; target</text>
+          <path class="ms-wBlue" d="M 640 565 V 532" marker-end="url(#msArrBlue)"/>
+
+          <!-- Legend and note -->
+          <g transform="translate(40 660)">
+            <rect class="ms-chan" x="0" y="-9" width="30" height="16" rx="3"/><text class="ms-lbl" x="40" y="5">STK/RFCM channel</text>
+            <rect class="ms-tx" x="185" y="-9" width="30" height="16" rx="3"/><text class="ms-lbl" x="225" y="5">Toolkit preprocessing / inputs</text>
+            <rect class="ms-mimo" x="430" y="-9" width="30" height="16" rx="3"/><text class="ms-lbl" x="470" y="5">MIMO matrix math</text>
+            <rect class="ms-dd" x="615" y="-9" width="30" height="16" rx="3"/><text class="ms-lbl" x="655" y="5">Delay &amp; Doppler</text>
+            <rect class="ms-agg" x="790" y="-9" width="30" height="16" rx="3"/><text class="ms-lbl" x="830" y="5">Time aggregation</text>
+            <rect class="ms-out" x="985" y="-9" width="30" height="16" rx="3"/><text class="ms-lbl" x="1025" y="5">Outputs</text>
+          </g>
+          <text class="ms-note" x="640" y="702">Capacity is summed over subcarriers; spatial diagnostics are averaged over subcarriers for each time sample.</text>
+        </svg>
+        <figcaption>Simplified one-slide view of how each channel sounding becomes the MIMO KPIs. The 16:9 figure can be copied directly onto a presentation slide. See Section 3.2 for the detailed flow.</figcaption>
+      </figure>
+    </div>
+
+    <div class="card">
+      <h2>3.2) Signal Processing Flow (Detailed)</h2>
+      <figure class="flow-figure">
+        <svg viewBox="0 0 1060 1125" role="img" aria-labelledby="mdTitle mdDesc" xmlns="http://www.w3.org/2000/svg">
+          <title id="mdTitle">Detailed MIMO KPI processing flow</title>
+          <desc id="mdDesc">Each sounding is read from the channel source, resampled onto the OFDM subcarrier grid, and branched into delay and Doppler metrics and a batched per-subcarrier MIMO pipeline: Gram matrix, log-determinant capacity, eigen-decomposition, spatial diagnostics, per-stream capacity, usable streams, and per-subcarrier maps, then aggregated over the band. Per-sample results build a time history that is reduced to scenario statistics and written to outputs.</desc>
+          <defs>
+            <marker id="mdArrGreen" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker>
+            <marker id="mdArrBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0b5cab"/></marker>
+            <marker id="mdArrPurple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5e35b1"/></marker>
+            <marker id="mdArrGrey" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/></marker>
+            <marker id="mdArrOrange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e65100"/></marker>
+            <marker id="mdArrTeal" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0e7490"/></marker>
+            <style>
+              .md-t1 { font: 600 13px Segoe UI, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+              .md-t2 { font: 11.5px Segoe UI, Arial, sans-serif; fill: #374151; text-anchor: middle; }
+              .md-lbl { font: italic 11.5px Segoe UI, Arial, sans-serif; fill: #374151; }
+              .md-grp { font: 600 12.5px Segoe UI, Arial, sans-serif; fill: #475569; }
+              .md-sub { font-size: 8.5px; }
+              .md-chan { fill: #eef7ee; stroke: #2e7d32; stroke-width: 1.5; }
+              .md-tx { fill: #e8f1fb; stroke: #0b5cab; stroke-width: 1.5; }
+              .md-mimo { fill: #ede7f6; stroke: #5e35b1; stroke-width: 1.5; }
+              .md-dd { fill: #f3f4f6; stroke: #6b7280; stroke-width: 1.5; }
+              .md-agg { fill: #fff3e0; stroke: #e65100; stroke-width: 1.5; }
+              .md-out { fill: #ecfeff; stroke: #0e7490; stroke-width: 1.5; }
+              .md-wGreen { stroke: #2e7d32; stroke-width: 2; fill: none; }
+              .md-wBlue { stroke: #0b5cab; stroke-width: 2; fill: none; }
+              .md-wPurple { stroke: #5e35b1; stroke-width: 2; fill: none; }
+              .md-wGrey { stroke: #6b7280; stroke-width: 2; fill: none; }
+              .md-wOrange { stroke: #e65100; stroke-width: 2; fill: none; }
+              .md-wTeal { stroke: #0e7490; stroke-width: 2; fill: none; }
+            </style>
+          </defs>
+
+          <!-- Inputs -->
+          <rect class="md-tx" x="50" y="16" width="280" height="70" rx="8"/>
+          <text class="md-t1" x="190" y="38">User Inputs</text>
+          <text class="md-t2" x="190" y="57">SCS, resource blocks, P<tspan class="md-sub" baseline-shift="sub">Tx</tspan>, N<tspan class="md-sub" baseline-shift="sub">0</tspan>, noise figure</text>
+          <text class="md-t2" x="190" y="74">target rate, usable stream SNR, CPU/GPU</text>
+          <rect class="md-chan" x="390" y="16" width="280" height="70" rx="8"/>
+          <text class="md-t1" x="530" y="38">Channel Source</text>
+          <text class="md-t2" x="530" y="57">STK/RFCM link.Compute(t) per frame,</text>
+          <text class="md-t2" x="530" y="74">or RST/RSP archive Response dataset</text>
+          <rect class="md-dd" x="720" y="16" width="310" height="70" rx="8"/>
+          <text class="md-t1" x="875" y="38">Batched Execution</text>
+          <text class="md-t2" x="875" y="57">256 subcarriers per batch (bounded memory)</text>
+          <text class="md-t2" x="875" y="74">NumPy on CPU or CuPy on GPU</text>
+
+          <!-- Per-sounding group -->
+          <rect x="16" y="104" width="1028" height="686" rx="12" fill="#fafafa" stroke="#64748b" stroke-width="1.5" stroke-dasharray="8 5"/>
+          <text class="md-grp" x="32" y="124">Per sounding — repeated for every frame × sounding, in chronological order</text>
+          <path class="md-wGreen" d="M 530 86 V 138" marker-end="url(#mdArrGreen)"/>
+
+          <!-- Center chain -->
+          <rect class="md-chan" x="390" y="140" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="164">1. Read Sounding</text>
+          <text class="md-t2" x="530" y="183">H(f): N<tspan class="md-sub" baseline-shift="sub">t</tspan> × N<tspan class="md-sub" baseline-shift="sub">r</tspan> × N<tspan class="md-sub" baseline-shift="sub">s</tspan> complex samples</text>
+          <path class="md-wGreen" d="M 530 198 V 218" marker-end="url(#mdArrGreen)"/>
+          <rect class="md-tx" x="390" y="220" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="244">2. OFDM Subcarrier Grid</text>
+          <text class="md-t2" x="530" y="263">N<tspan class="md-sub" baseline-shift="sub">sc</tspan> = 12·RB at spacing Δf, centered on fc</text>
+          <path class="md-wBlue" d="M 530 278 V 298" marker-end="url(#mdArrBlue)"/>
+          <rect class="md-tx" x="390" y="300" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="324">3. Band-Limited Resampling</text>
+          <text class="md-t2" x="530" y="343">IDFT to delay domain → H<tspan class="md-sub" baseline-shift="sub">k</tspan> at each f<tspan class="md-sub" baseline-shift="sub">k</tspan></text>
+          <path class="md-wBlue" d="M 530 358 V 398" marker-end="url(#mdArrBlue)"/>
+          <rect class="md-mimo" x="390" y="400" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="424">5. Gram Matrix</text>
+          <text class="md-t2" x="530" y="443">G<tspan class="md-sub" baseline-shift="sub">k</tspan> = H<tspan class="md-sub" baseline-shift="sub">k</tspan>H<tspan class="md-sub" baseline-shift="super">H</tspan><tspan class="md-sub" baseline-shift="sub">k</tspan> or H<tspan class="md-sub" baseline-shift="super">H</tspan><tspan class="md-sub" baseline-shift="sub">k</tspan>H<tspan class="md-sub" baseline-shift="sub">k</tspan> (smaller size)</text>
+          <path class="md-wPurple" d="M 530 458 V 478" marker-end="url(#mdArrPurple)"/>
+          <rect class="md-mimo" x="390" y="480" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="504">6. Log-Det Capacity</text>
+          <text class="md-t2" x="530" y="523">C<tspan class="md-sub" baseline-shift="sub">k</tspan> = log₂ det(I + γG<tspan class="md-sub" baseline-shift="sub">k</tspan>) via slogdet</text>
+          <path class="md-wPurple" d="M 530 538 V 558" marker-end="url(#mdArrPurple)"/>
+          <rect class="md-mimo" x="390" y="560" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="584">7. Eigen-Decomposition</text>
+          <text class="md-t2" x="530" y="603">λ<tspan class="md-sub" baseline-shift="sub">i,k</tspan> = eigvalsh(G<tspan class="md-sub" baseline-shift="sub">k</tspan>), strongest first</text>
+          <path class="md-wPurple" d="M 530 618 V 698" marker-end="url(#mdArrPurple)"/>
+          <rect class="md-mimo" x="390" y="700" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="719">9. Band Aggregation</text>
+          <text class="md-t2" x="530" y="736">C = Δf Σ<tspan class="md-sub" baseline-shift="sub">k</tspan> C<tspan class="md-sub" baseline-shift="sub">k</tspan>; mean spectral efficiency</text>
+          <text class="md-t2" x="530" y="751">spatial metrics averaged over k</text>
+
+          <!-- Left column: delay/Doppler and SNR scale -->
+          <rect class="md-dd" x="50" y="300" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="190" y="319">4a. Power Delay Profile</text>
+          <text class="md-t2" x="190" y="336">IFFT over subcarriers, port-averaged</text>
+          <text class="md-t2" x="190" y="351">→ RMS delay spread σ<tspan class="md-sub" baseline-shift="sub">τ</tspan>, B<tspan class="md-sub" baseline-shift="sub">c</tspan> ≈ 1/(5σ<tspan class="md-sub" baseline-shift="sub">τ</tspan>)</text>
+          <rect class="md-dd" x="50" y="380" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="190" y="399">4b. Temporal Correlation</text>
+          <text class="md-t2" x="190" y="416">ρ = |⟨H<tspan class="md-sub" baseline-shift="sub">prev</tspan>, H⟩| / (‖H<tspan class="md-sub" baseline-shift="sub">prev</tspan>‖ ‖H‖)</text>
+          <text class="md-t2" x="190" y="431">→ coherence time T<tspan class="md-sub" baseline-shift="sub">c</tspan> = −Δt / ln ρ</text>
+          <path class="md-wGrey" d="M 390 329 H 332" marker-end="url(#mdArrGrey)"/>
+          <path class="md-wGrey" d="M 360 329 V 409 H 332" marker-end="url(#mdArrGrey)"/>
+          <rect class="md-tx" x="50" y="480" width="280" height="58" rx="8"/>
+          <text class="md-t1" x="190" y="499">SNR Scale γ</text>
+          <text class="md-t2" x="190" y="516">γ = P<tspan class="md-sub" baseline-shift="sub">Tx</tspan> / (N<tspan class="md-sub" baseline-shift="sub">sc</tspan> · N<tspan class="md-sub" baseline-shift="sub">t</tspan> · N<tspan class="md-sub" baseline-shift="sub">0</tspan>Δf · F)</text>
+          <text class="md-t2" x="190" y="531">equal power per subcarrier and Tx port</text>
+          <path class="md-wBlue" d="M 330 509 H 388" marker-end="url(#mdArrBlue)"/>
+          <path class="md-wBlue" d="M 60 86 V 96 H 34 V 509 H 48" stroke-dasharray="4 3" marker-end="url(#mdArrBlue)"/>
+
+          <!-- Right column: eigenvalue-derived metrics -->
+          <path class="md-wPurple" d="M 670 589 H 695"/>
+          <path class="md-wPurple" d="M 695 429 V 669"/>
+          <path class="md-wPurple" d="M 695 429 H 718" marker-end="url(#mdArrPurple)"/>
+          <path class="md-wPurple" d="M 695 509 H 718" marker-end="url(#mdArrPurple)"/>
+          <path class="md-wPurple" d="M 695 589 H 718" marker-end="url(#mdArrPurple)"/>
+          <path class="md-wPurple" d="M 695 669 H 718" marker-end="url(#mdArrPurple)"/>
+          <rect class="md-mimo" x="720" y="400" width="310" height="58" rx="8"/>
+          <text class="md-t1" x="875" y="419">8a. Spatial Diagnostics</text>
+          <text class="md-t2" x="875" y="436">effective rank exp(−Σ p<tspan class="md-sub" baseline-shift="sub">i</tspan> ln p<tspan class="md-sub" baseline-shift="sub">i</tspan>)</text>
+          <text class="md-t2" x="875" y="451">condition number κ, dominant fraction p<tspan class="md-sub" baseline-shift="sub">max</tspan></text>
+          <rect class="md-mimo" x="720" y="480" width="310" height="58" rx="8"/>
+          <text class="md-t1" x="875" y="504">8b. Per-Stream Capacity</text>
+          <text class="md-t2" x="875" y="523">C<tspan class="md-sub" baseline-shift="sub">i</tspan> = Δf Σ<tspan class="md-sub" baseline-shift="sub">k</tspan> log₂(1 + γλ<tspan class="md-sub" baseline-shift="sub">i,k</tspan>)</text>
+          <rect class="md-mimo" x="720" y="560" width="310" height="58" rx="8"/>
+          <text class="md-t1" x="875" y="579">8c. Usable Streams</text>
+          <text class="md-t2" x="875" y="596">count of γλ<tspan class="md-sub" baseline-shift="sub">i,k</tspan> ≥ usable stream SNR (input)</text>
+          <text class="md-t2" x="875" y="611">→ mean, min, and max across subcarriers</text>
+          <rect class="md-mimo" x="720" y="640" width="310" height="58" rx="8"/>
+          <text class="md-t1" x="875" y="659">8d. Per-Subcarrier Maps</text>
+          <text class="md-t2" x="875" y="676">gain ‖H<tspan class="md-sub" baseline-shift="sub">k</tspan>‖²/(N<tspan class="md-sub" baseline-shift="sub">t</tspan>N<tspan class="md-sub" baseline-shift="sub">r</tspan>), C<tspan class="md-sub" baseline-shift="sub">k</tspan>, usable count</text>
+          <text class="md-t2" x="875" y="691">averaged into ≤ 256 frequency bins</text>
+          <path class="md-wPurple" d="M 875 698 V 729 H 672" marker-end="url(#mdArrPurple)"/>
+          <text class="md-lbl" x="32" y="778">Steps 4a–9 together form one per-sample metric record.</text>
+
+          <!-- Time aggregation and outputs -->
+          <path class="md-wOrange" d="M 530 758 V 818" marker-end="url(#mdArrOrange)"/>
+          <rect class="md-agg" x="350" y="820" width="360" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="844">10. Time History</text>
+          <text class="md-t2" x="530" y="863">append time, frame, sounding, and all per-sample metrics</text>
+          <path class="md-wOrange" d="M 530 878 V 908" marker-end="url(#mdArrOrange)"/>
+          <rect class="md-agg" x="350" y="910" width="360" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="929">11. Scenario Statistics</text>
+          <text class="md-t2" x="530" y="946">capacity CDF (10%, 50%) · outage events (sample-and-hold)</text>
+          <text class="md-t2" x="530" y="961">availability, longest outage · time–frequency heatmaps</text>
+          <rect class="md-tx" x="50" y="910" width="250" height="58" rx="8"/>
+          <text class="md-t1" x="175" y="934">Target Service Rate</text>
+          <text class="md-t2" x="175" y="953">outage when C &lt; target rate</text>
+          <path class="md-wBlue" d="M 300 939 H 348" marker-end="url(#mdArrBlue)"/>
+          <path class="md-wTeal" d="M 530 968 V 998" marker-end="url(#mdArrTeal)"/>
+          <rect class="md-out" x="350" y="1000" width="360" height="58" rx="8"/>
+          <text class="md-t1" x="530" y="1019">12. Outputs</text>
+          <text class="md-t2" x="530" y="1036">Capacity Time History plots + PNG files · KPI summary</text>
+          <text class="md-t2" x="530" y="1051">mimo_capacity_&lt;link&gt;.csv · mimo_outage_events_&lt;link&gt;.csv</text>
+
+          <!-- Legend -->
+          <g transform="translate(16 1100)">
+            <rect class="md-chan" x="0" y="-8" width="26" height="14" rx="3"/><text class="md-lbl" x="34" y="4">STK/RFCM channel</text>
+            <rect class="md-tx" x="165" y="-8" width="26" height="14" rx="3"/><text class="md-lbl" x="199" y="4">Toolkit preprocessing / inputs</text>
+            <rect class="md-mimo" x="385" y="-8" width="26" height="14" rx="3"/><text class="md-lbl" x="419" y="4">MIMO matrix math</text>
+            <rect class="md-dd" x="545" y="-8" width="26" height="14" rx="3"/><text class="md-lbl" x="579" y="4">Delay &amp; Doppler / execution</text>
+            <rect class="md-agg" x="760" y="-8" width="26" height="14" rx="3"/><text class="md-lbl" x="794" y="4">Time aggregation</text>
+            <rect class="md-out" x="905" y="-8" width="26" height="14" rx="3"/><text class="md-lbl" x="939" y="4">Outputs</text>
+          </g>
+        </svg>
+        <figcaption>Detailed per-sounding processing. Only the channel response itself comes from STK/RFCM (or a previously exported RST/RSP archive); every subsequent step is performed by the toolkit. Step numbers in the figure are figure-local and do not correspond to the numbered list in Section 3.</figcaption>
+      </figure>
+    </div>
+
+    <div class="card">
       <h2>4) RST / RSP File Format (Channel Import)</h2>
       <p>The toolkit expects HDF5-based channel files with a <code>/Links</code> hierarchy, the same format used by the End to End Communication Analysis toolkit. After clicking <b>Load Metadata</b>, every link in the file is discovered and its Tx/Rx antenna counts, sounding count, sample count, sounding interval, bandwidth, and center frequency are displayed.</p>
       <ul>
@@ -156,6 +445,8 @@
           <tr><td>Total Tx Power</td><td>Total radiated power across the entire transmit array, in dBm.</td><td>Divided equally across every active subcarrier and, on each subcarrier, equally across every transmit antenna port. Higher power raises the per-subcarrier SNR and therefore capacity, with diminishing (logarithmic) returns.</td></tr>
           <tr><td>Thermal Noise Density</td><td>Receiver noise power spectral density in dBm/Hz (a value near -174 dBm/Hz corresponds to standard room-temperature thermal noise).</td><td>Combined with subcarrier spacing and noise figure to obtain the thermal noise power on each subcarrier at each receive port.</td></tr>
           <tr><td>Receiver Noise Figure</td><td>Additional receiver noise contribution, in dB, on top of the thermal noise floor.</td><td>Higher noise figure directly reduces per-subcarrier SNR and therefore reduces capacity; it does not change the channel's spatial structure (rank, condition number, dominant eigenvalue fraction).</td></tr>
+          <tr><td>Target Service Rate</td><td>The minimum capacity, in Mbps, that the link must sustain for the service to be considered available.</td><td>Any time sample whose total capacity falls below this rate is an outage. It sets the service availability, the outage events, and the dashed target line on the capacity plot. Choose the application's required rate plus any protocol overhead margin, since the capacity here is an ideal Shannon bound rather than delivered throughput.</td></tr>
+          <tr><td>Usable Stream SNR</td><td>The minimum per-eigenmode SNR, in dB, for a spatial stream to count as usable.</td><td>A stream counts on a subcarrier when <code>&gamma;<sub>k</sub> &lambda;<sub>i,k</sub> &ge; SNR<sub>min</sub></code>. Set it near the SNR required by the lowest modulation and coding scheme you would schedule (roughly -5 to 0 dB for robust QPSK). Raising it reports only streams strong enough for higher-order modulation.</td></tr>
           <tr><td>Acceleration (Use CPU / Use GPU)</td><td>Selects whether batched matrix operations run on the CPU with NumPy or on a local NVIDIA GPU with CuPy.</td><td>Both paths compute the identical mathematical result. GPU mode requires the CuPy package matching the installed CUDA version and a CUDA-capable GPU; it is most beneficial for large antenna counts, wide bandwidths, or long scenario time histories.</td></tr>
         </tbody>
       </table>
@@ -163,16 +454,19 @@
 
     <div class="card">
       <h2>6) Optional Plots</h2>
-      <p>The <b>Optional Plots</b> group on the left panel controls which diagnostic panels are added to the Capacity Time History output. All four are enabled by default. The capacity, eigenvalue spectrum, condition number, and dominant eigenvalue fraction panels are always produced. Toggles are read when the plots are rendered, so changing them requires re-running the analysis.</p>
+      <p>The <b>Optional Plots</b> group on the left panel controls which diagnostic panels are added to the Capacity Time History output. All seven are enabled by default. The capacity, eigenvalue spectrum, condition number, and dominant eigenvalue fraction panels are always produced. Toggles are read when the plots are rendered, so changing them requires re-running the analysis.</p>
       <table>
         <thead>
           <tr><th>Toggle</th><th>Adds</th><th>Why You Would Use It</th></tr>
         </thead>
         <tbody>
           <tr><td>Per-Stream Capacity</td><td>One curve per spatial eigenmode showing the capacity that mode carries.</td><td>Shows how many RF chains are actually earning their keep, and what a rank-limited receiver would achieve.</td></tr>
+          <tr><td>Usable Stream Count</td><td>The number of eigenmodes meeting the Usable Stream SNR threshold, averaged across subcarriers, with its subcarrier min&ndash;max range and the effective rank for comparison.</td><td>Answers how many spatial streams can actually carry data at a given link quality, which sizes RF chains and the maximum MIMO layer count.</td></tr>
           <tr><td>Capacity CDF (Outage Capacity)</td><td>The empirical distribution of capacity across all soundings, with 10% and 50% outage markers.</td><td>Links are sized on outage capacity rather than mean capacity; this is the design number for a target availability.</td></tr>
+          <tr><td>Service Outage Duration</td><td>The start time and duration of each interval in which capacity stays below the Target Service Rate, with a service availability summary.</td><td>Shows whether failures are brief dropouts that buffering or retransmission can hide, or sustained interruptions that break the service.</td></tr>
           <tr><td>Delay Spread and Coherence Bandwidth</td><td>RMS delay spread and the implied coherence bandwidth, against the configured subcarrier spacing.</td><td>Validates the OFDM numerology: subcarrier spacing and cyclic prefix must suit the channel's delay dispersion.</td></tr>
           <tr><td>Temporal Correlation and Coherence Time</td><td>Correlation between consecutive soundings and the coherence time it implies.</td><td>Sets the required CSI feedback rate, pilot density, and precoder update rate for a mobile link.</td></tr>
+          <tr><td>Time-Frequency Heatmaps</td><td>Three heatmaps over scenario time and subcarrier frequency: channel gain, spectral efficiency, and usable stream count.</td><td>Reveals frequency-selective notches and localized rank collapse that band-averaged curves hide, and informs frequency-selective scheduling and sub-band precoding.</td></tr>
         </tbody>
       </table>
     </div>
@@ -184,12 +478,15 @@
         <li><b>Peak Capacity:</b> The single highest instantaneous capacity observed across the scenario time history, typically corresponding to a time sample with strong, well-conditioned multipath coupling.</li>
         <li><b>Mean Spectral Efficiency:</b> Average, across time, of the per-subcarrier spectral efficiency (bits/s/Hz per subcarrier) averaged over the OFDM band. Multiplying this by the occupied bandwidth reproduces the total capacity.</li>
         <li><b>Mean Effective Rank:</b> Average, across time, of the entropy-based effective rank described in Section 8. This indicates how many spatial modes are typically usable, not merely how many are mathematically nonzero.</li>
+        <li><b>Mean Usable Streams:</b> Average, across time, of the band-averaged usable stream count at the configured Usable Stream SNR. Unlike effective rank, this accounts for absolute mode strength.</li>
+        <li><b>Service Availability:</b> The fraction of observed scenario time during which capacity meets or exceeds the Target Service Rate, using the sample-and-hold convention described in Section 8.</li>
+        <li><b>Longest Outage:</b> The longest single interval below the Target Service Rate, with the total number of outage events.</li>
       </ul>
     </div>
 
     <div class="card">
       <h2>8) Output Plots and Files (Capacity Time History Tab)</h2>
-      <p>After analysis completes, the selected time-history plots are stacked into a single scrollable view on the <b>Capacity Time History</b> tab, scaled to the tab width so each panel stays readable. Every panel is also saved individually as a PNG file in the local <code>output/</code> folder, named <code>mimo_&lt;metric&gt;_&lt;link&gt;.png</code>. A companion CSV file, <code>mimo_capacity_&lt;link&gt;.csv</code>, records every time sample with its frame index, sounding index, and all scalar metrics below.</p>
+      <p>After analysis completes, the selected time-history plots are stacked into a single scrollable view on the <b>Capacity Time History</b> tab, scaled to the tab width so each panel stays readable. Every panel is also saved individually as a PNG file in the local <code>output/</code> folder, named <code>mimo_&lt;metric&gt;_&lt;link&gt;.png</code>. A companion CSV file, <code>mimo_capacity_&lt;link&gt;.csv</code>, records every time sample with its frame index, sounding index, and all scalar metrics below. A second CSV file, <code>mimo_outage_events_&lt;link&gt;.csv</code>, lists every outage event with its start time, end time, and duration; it contains only a header when no outage occurs.</p>
       <p>Every plot title carries a second line naming the link as <code>&lt;Transmitter&gt; to &lt;Receiver&gt;</code>, read from the node names in the imported file (falling back to the raw link name if the file carries none).</p>
       <div class="note">
         <b>On-screen versus exported colors:</b> The in-application plots use a bright, high-contrast palette chosen to stay legible on the toolkit's dark background. The exported PNG files are rendered separately on a white background with a deeper palette, so they drop directly into reports and slides. The underlying data is identical.
@@ -217,6 +514,16 @@
             <td>The curves sum exactly to the total capacity. A cumulative reading tells you what a receiver limited to one, two, or three streams would achieve, which directly informs how many RF chains the radio needs. Streams that hug zero throughout the scenario are contributing nothing and represent hardware that could be removed.</td>
           </tr>
           <tr>
+            <td>Usable Stream Count (optional)<br>(<code>usable_stream_count_mean</code>, <code>usable_stream_count_min</code>, <code>usable_stream_count_max</code>)</td>
+            <td>On each subcarrier, the number of eigenmodes whose SNR <code>&gamma;<sub>k</sub> &lambda;<sub>i,k</sub></code> meets the Usable Stream SNR threshold. The solid curve is the mean across subcarriers, and the shaded band spans the lowest to highest subcarrier count. Effective rank is overlaid as a dashed line.</td>
+            <td>This is the SNR-aware counterpart of effective rank: several equally weak modes give a high effective rank but a low usable stream count. A gap between the dashed rank curve and the solid curve means modes exist but are too weak to use at this power and noise figure. A wide shaded band means stream capability varies across the band, favoring per-sub-band rank adaptation. Per-mode SNR assumes ideal eigenmode transmission with equal power per Tx port, so it is an upper bound on the layers a practical precoder could support.</td>
+          </tr>
+          <tr>
+            <td>Service Outage Duration (optional)<br>(<code>below_target_rate</code>)</td>
+            <td>One stem per outage event, placed at its start time, with height equal to its duration in milliseconds. A summary box gives service availability, event count, and longest and mean duration. In the CSV, <code>below_target_rate</code> is 1 for samples below the Target Service Rate.</td>
+            <td>Each sample is held until the next sample: an outage starts at its first sample below target and ends at the next sample at or above target. An outage still active at the final sample is extended by the median sample spacing. Duration resolution is therefore limited by the sounding interval, and any gaps between frames are treated as continuing the last observed state. Use frame times that are densely spaced relative to the outages of interest, and use this plot with the Capacity CDF: the CDF shows how often the link is below a rate, while this plot shows how long each failure lasts.</td>
+          </tr>
+          <tr>
             <td>Capacity CDF (optional)</td>
             <td>Empirical cumulative distribution of total capacity over every processed sounding, with dashed markers at the 10% and 50% outage points.</td>
             <td>Read the 10% marker as the capacity the link meets or exceeds 90% of the time &mdash; this is normally the number a link budget should be built on. A steep curve means a stable link; a long lower tail means occasional deep fades that a fixed-rate service would not survive without margin.</td>
@@ -240,6 +547,11 @@
             <td>Temporal Correlation and Coherence Time (optional)<br>(<code>adjacent_sounding_correlation</code>, <code>coherence_time_s</code>)</td>
             <td>The normalized magnitude correlation between the channel matrix of this sounding and the previous one, and the coherence time implied by fitting an exponential decay to that single lag, <code>T<sub>c</sub> = -&Delta;t / ln &rho;</code>. Coherence time is drawn on a logarithmic right-hand axis.</td>
             <td>Low correlation or short coherence time indicates fast channel variation, which demands more frequent CSI feedback, denser pilots, and faster precoder updates; stale channel knowledge in such conditions causes real throughput to fall well below the capacity shown here. The first sounding has no predecessor, so both values are blank at the start of the scenario. Note that the shortest resolvable coherence time is set by the sounding interval in the imported file.</td>
+          </tr>
+          <tr>
+            <td>Time-Frequency Heatmaps (optional)</td>
+            <td>Three heatmaps with scenario time on the x-axis and subcarrier frequency offset from the carrier on the y-axis: <b>channel gain</b> (<code>&#8214;H<sub>k</sub>&#8214;<sub>F</sub><sup>2</sup> / (N<sub>t</sub> N<sub>r</sub>)</code>, the mean power gain across Tx&ndash;Rx port pairs, in dB), <b>spectral efficiency</b> (<code>C<sub>k</sub></code> in bit/s/Hz), and <b>usable stream count</b>. Wide allocations are averaged into at most 256 frequency bins. The gain color scale runs from its peak down to the 1st percentile of observed gain, and never spans more than 80 dB, so a few deep nulls saturate at the bottom color rather than compressing the rest of the scale.</td>
+            <td>Horizontal stripes reveal persistent frequency-selective notches; vertical stripes reveal wideband fades such as blockage. Isolated dark patches in the usable stream heatmap reveal rank collapse confined to some sub-bands, which band-averaged curves hide. Time cells extend halfway to neighboring samples, so gaps between frames are drawn as wide cells holding the nearest observed value.</td>
           </tr>
           <tr>
             <td><code>time_s</code>, <code>frame_index</code>, <code>sounding_index</code></td>
