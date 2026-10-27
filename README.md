@@ -11,6 +11,11 @@ This folder is a standalone toolkit for archived RST/RSP analysis and live STK R
 - `toolkit_lib/qam_end_to_end.py`: Required DSP support module.
 - `toolkit_lib/channel_sources.py`: Shared HDF5 and live STK/RFCM streaming adapters.
 - `requirements.txt`: Python package dependencies.
+- `examples/E2E_toolkit_SIMO_MIMO_Example.vdf`: Self-contained STK 13.1 example scenario
+	(Exton, PA) for live RFCM mode. Its `EXT_Uplink` and `EXT_Downlink` analyses each
+	contain four links between a 32-element base station and SIMO/MIMO antennas on a
+	ground vehicle and a quadcopter. All antenna patterns and models are packed in the VDF.
+	It works with both the end-to-end and MIMO toolkits.
 
 ## Setup
 
