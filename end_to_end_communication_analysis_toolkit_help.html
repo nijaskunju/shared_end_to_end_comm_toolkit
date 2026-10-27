@@ -467,14 +467,14 @@
         <b>Important:</b> RX RF spectrum axis limits remain locked to the imported RSP center frequency and bandwidth, so frame-to-frame comparisons stay consistent.
       </div>
       <div class="note">
-        <b>RX RF spectrum convention:</b> The received analytic RF samples are first mixed back to their complex envelope so a carrier above the discrete-time Nyquist frequency cannot wrap to the FFT edges. A shifted FFT is then mapped back around the physical RF center frequency. Power is displayed in dBm per true FFT bin at the RBW shown in the title; the integrated value sums those bins without interpolation onto the RFCM frequency grid.
+        <b>RX RF spectrum convention:</b> The received analytic RF samples are first mixed back to their complex envelope so a carrier above the discrete-time Nyquist frequency cannot wrap to the FFT edges. A shifted FFT is then mapped back around the physical RF center frequency. Power is displayed in dBm per FFT bin at the segment RBW shown in the title (fs divided by the segment length, chosen so each frame yields roughly 37 overlapping segments); the integrated value sums the averaged bins without interpolation onto the RFCM frequency grid.
       </div>
     </div>
 
     <div class="card">
       <h2>Interference Sources</h2>
       <p>For a selected RFCM link, the toolkit identifies other links terminating at the same receiver. Enable any candidate in the <b>Interference Sources</b> table and select its waveform and transmit power. The desired and interfering RFCM channels are computed at the same scenario time and their complex received waveforms are summed before noise, channel estimation, equalization, and decoding.</p>
-      <p>The status panel reports physical SNR, SIR, and SINR. The constellation and BER therefore show the effect of the configured interference. The current waveform choices are QAM, CW tone, and wideband complex noise. QAM interferers use independently randomized symbols and currently inherit the intended signal's QAM order and timing settings. Every interferer is upconverted to the intended signal's active carrier frequency, so it is co-channel: a CW tone sits at the carrier, and QAM and wideband noise overlap the intended signal's band. When frequency hopping is enabled, interferers follow the same per-frame hop, which models a worst-case follower jammer or co-channel user.</p>
+      <p>The status panel reports physical SNR, SIR, and SINR. The constellation and BER therefore show the effect of the configured interference. The current waveform choices are QAM, CW tone, and wideband complex noise. QAM interferers use independently randomized symbols and currently inherit the intended signal's QAM order and timing settings. Every interferer is upconverted to the intended signal's active carrier frequency plus the row's <b>Offset (MHz)</b>; the offset must lie within &plusmn;fs/2 of the carrier, where fs = symbol rate &times; samples/symbol. Interferers are continuous over the entire received record and pass through their channel in steady state, so a CW tone appears as a single spectral line with a random phase relative to the intended signal. With zero offset, a CW tone collapses to a constant shift of the whole constellation; with a small nonzero offset, each constellation point traces a ring; with an offset beyond the RRC passband, &plusmn;(1+&beta;)R<sub>s</sub>/2, the matched filter largely rejects it. When frequency hopping is enabled, interferers follow the same per-frame hop, which models a worst-case follower jammer or co-channel user.</p>
     </div>
 
     <div class="card">
@@ -527,10 +527,10 @@
             <td>Tight clusters near ideal points indicate low EVM and low BER. Smearing/rotation/spread indicates noise, residual ISI, phase/frequency error, or imperfect equalization.</td>
           </tr>
           <tr>
-            <td>RX RF Spectrum (Noisy)</td>
-            <td>Spectrum of the noisy received RF waveform after channel convolution and AWGN injection.</td>
-            <td>X: Frequency (MHz), Y: Power (dBm/bin), title includes RBW.</td>
-            <td>Use this to inspect occupied bandwidth and noise floor. Compare expected floor line with measured floor. Signal peak-to-floor separation gives intuitive SNR trend.</td>
+            <td>RX RF Spectrum (Persistence)</td>
+            <td>Persistence (density) spectrum of the noisy received RF waveform after channel convolution, interference, and AWGN. The frame is split into Hamming-windowed segments with 75% overlap; color shows how often each frequency/power cell is hit across segments (red/yellow = frequent, blue/purple = rare, black = never). The white trace is the segment-averaged (Welch) spectrum.</td>
+            <td>X: Frequency (MHz), Y: Power (dBm/bin) from &minus;160 to &minus;60, title includes the segment RBW.</td>
+            <td>Use this to inspect occupied bandwidth, noise floor, and how steady each component is. A CW tone is a narrow, consistently colored spike; noise and modulated signals spread vertically across several dB. Signal peak-to-floor separation gives an intuitive SNR trend.</td>
           </tr>
           <tr>
             <td>Channel Freq vs Power</td>

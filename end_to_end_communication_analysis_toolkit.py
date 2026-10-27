@@ -59,6 +59,7 @@ from toolkit_lib.ui_style import TOGGLE_STYLESHEET
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 plt.style.use("dark_background")
 
@@ -195,22 +196,35 @@ def _apply_dark_theme(app):
     app.setStyleSheet(DARK_STYLESHEET + TOGGLE_STYLESHEET)
 
 
-def _make_interference_waveform(qam_system, waveform, power_w, frequency_offset_hz=0.0):
-    sample_count = qam_system.num_symbols * qam_system.samples_per_symbol
-    time_s = np.arange(sample_count) * qam_system.Ts
+_INTERFERENCE_RNG = np.random.default_rng()
+
+
+def _make_interference_waveform(
+    qam_system, waveform, power_w, sample_count, frequency_offset_hz=0.0, start_sample=0
+):
+    """Continuous interferer of `sample_count` samples starting at sample index `start_sample`."""
+    if abs(frequency_offset_hz) >= qam_system.fs / 2.0:
+        raise ValueError(
+            f"Interference frequency offset {frequency_offset_hz / 1e6:.3f} MHz is outside the "
+            f"simulated band of \u00b1{qam_system.fs / 2e6:.3f} MHz around the active carrier."
+        )
+    time_s = (start_sample + np.arange(sample_count)) * qam_system.Ts
     if waveform == "CW Tone":
-        signal = np.ones(sample_count, dtype=np.complex128)
+        # Unmodulated carrier with an arbitrary phase relative to the desired signal.
+        signal = np.exp(1j * _INTERFERENCE_RNG.uniform(0.0, 2.0 * np.pi)) * np.ones(
+            sample_count, dtype=np.complex128
+        )
     elif waveform == "Wideband Noise":
         signal = np.random.randn(sample_count) + 1j * np.random.randn(sample_count)
     else:
-        bits = np.random.randint(0, 2, qam_system.num_symbols * qam_system.bits_per_symbol)
+        sps = qam_system.samples_per_symbol
+        symbol_count = int(np.ceil(sample_count / sps)) + 2 * qam_system.span
+        bits = np.random.randint(0, 2, symbol_count * qam_system.bits_per_symbol)
         symbols = qam_system.bits_to_symbols(bits)
-        rrc = qam_system.rrc_filter(
-            qam_system.beta, qam_system.samples_per_symbol, qam_system.span
-        )
-        signal = upfirdn(rrc, symbols, qam_system.samples_per_symbol)
-        time_s = np.arange(len(signal)) * qam_system.Ts
-    # Co-channel with the desired signal's active carrier, which follows frequency hopping.
+        rrc = qam_system.rrc_filter(qam_system.beta, sps, qam_system.span)
+        # Drop the pulse-shaping ramp so the interferer is already on for the whole record.
+        signal = upfirdn(rrc, symbols, sps)[qam_system.span * sps :][:sample_count]
+    # Offset is relative to the desired signal's active carrier, which follows frequency hopping.
     signal = signal * np.exp(1j * 2.0 * np.pi * (qam_system.fc + frequency_offset_hz) * time_s)
     scale = np.sqrt(max(power_w, 1e-30) / max(float(np.mean(np.abs(signal) ** 2)), 1e-30))
     return signal * scale
@@ -247,26 +261,6 @@ def _qam_signal_processing(
     carrier = np.exp(1j * 2 * np.pi * qam_system.fc * t)
     tx_passband = tx_baseband * carrier
 
-    interference_channels = interference_channels or []
-    interference_cfgs = interference_cfgs or []
-    interference_passband = np.zeros_like(tx_passband, dtype=np.complex128)
-    for interference_channel, cfg in zip(interference_channels, interference_cfgs):
-        h_interference = qam_system.compute_fir_from_freq_response(
-            freq_domain,
-            interference_channel,
-            N_fft=qam_system.taps_num,
-            fs=1.0 / ts,
-        )
-        interference_power_w = 10.0 ** ((float(cfg.get("power_dbm", -30.0)) - 30.0) / 10.0)
-        jammer = _make_interference_waveform(
-            qam_system,
-            cfg.get("waveform", "QAM"),
-            interference_power_w,
-            float(cfg.get("frequency_offset_hz", 0.0)),
-        )
-        padded_jammer = np.pad(jammer, (0, max(len(tx_passband) - len(jammer), 0)))[: len(tx_passband)]
-        interference_passband += lfilter(h_interference, 1.0, padded_jammer)
-
     # Imported S-parameter coupling is referenced to 1 W Tx power.
     # In power/noise mode, normalize waveform to 1 W average and rescale by user Tx power.
     if noise_cfg.get("mode") == "power_noise":
@@ -277,10 +271,28 @@ def _qam_signal_processing(
     delay_h = np.argmax(np.abs(h))
     tx_padded = np.pad(tx_passband, (0, 2 * delay_h), "constant")
     rx_passband_signal = lfilter(h, 1.0, tx_padded)
-    rx_passband_interference = np.pad(
-        interference_passband,
-        (0, max(len(tx_padded) - len(interference_passband), 0)),
-    )[: len(tx_padded)]
+
+    rx_passband_interference = np.zeros(len(tx_padded), dtype=np.complex128)
+    for interference_channel, cfg in zip(interference_channels or [], interference_cfgs or []):
+        h_interference = qam_system.compute_fir_from_freq_response(
+            freq_domain,
+            interference_channel,
+            N_fft=qam_system.taps_num,
+            fs=1.0 / ts,
+        )
+        interference_power_w = 10.0 ** ((float(cfg.get("power_dbm", -30.0)) - 30.0) / 10.0)
+        # Start early by the FIR length so the channel output is steady-state over the whole record.
+        lead_in = len(h_interference) - 1
+        jammer = _make_interference_waveform(
+            qam_system,
+            cfg.get("waveform", "QAM"),
+            interference_power_w,
+            len(tx_padded) + lead_in,
+            float(cfg.get("frequency_offset_hz", 0.0)),
+            start_sample=-lead_in,
+        )
+        rx_passband_interference += lfilter(h_interference, 1.0, jammer)[lead_in:]
+
     rx_passband_clean = rx_passband_signal + rx_passband_interference
     peak_rx_power_w = float(np.max(np.abs(rx_passband_clean) ** 2))
     signal_power_w = float(np.mean(np.abs(rx_passband_signal) ** 2))
@@ -392,30 +404,43 @@ def _qam_signal_processing(
     )
 
 
-def _rx_rf_power_spectrum(rx_passband, sample_rate_hz, carrier_hz):
-    """Return physical RF frequencies and window-corrected power per FFT bin."""
+def _rx_rf_persistence_spectrum(rx_passband, sample_rate_hz, carrier_hz, level_edges_dbm):
+    """Short-time spectra of the record as a persistence (frequency x level) hit density.
+
+    Returns frequencies, density[level, freq] as the fraction of segments crossing each
+    level, the Welch-average power per bin (W), and the RBW.
+    """
     sample_count = len(rx_passband)
-    if sample_count < 2:
-        raise ValueError("At least two received samples are required for an RF spectrum.")
+    segment_length = max(64, 2 ** int(np.floor(np.log2(max(sample_count // 10, 1)))))
+    segment_length = min(segment_length, sample_count)
+    hop = max(segment_length // 4, 1)
+    starts = np.arange(0, sample_count - segment_length + 1, hop)
 
     sample_times_s = np.arange(sample_count) / sample_rate_hz
-    complex_envelope = rx_passband * np.exp(
-        -1j * 2.0 * np.pi * carrier_hz * sample_times_s
-    )
-    window = np.hamming(sample_count)
-    spectrum = np.fft.fftshift(np.fft.fft(complex_envelope * window))
+    envelope = rx_passband * np.exp(-1j * 2.0 * np.pi * carrier_hz * sample_times_s)
+    window = np.hamming(segment_length)
+    segments = envelope[starts[:, None] + np.arange(segment_length)] * window
+    spectra = np.fft.fftshift(np.fft.fft(segments, axis=1), axes=1)
+    power_w = (np.abs(spectra) ** 2) / (float(np.sum(window**2)) * segment_length)
     frequencies_hz = (
-        np.fft.fftshift(np.fft.fftfreq(sample_count, d=1.0 / sample_rate_hz))
-        + carrier_hz
+        np.fft.fftshift(np.fft.fftfreq(segment_length, d=1.0 / sample_rate_hz)) + carrier_hz
     )
 
-    window_power = max(float(np.sum(window**2)), 1e-30)
-    power_per_bin_w = (np.abs(spectrum) ** 2) / (
-        window_power * sample_count
-    )
-    resolution_bandwidth_hz = sample_rate_hz / sample_count
-    return frequencies_hz, power_per_bin_w, resolution_bandwidth_hz
+    n_levels = len(level_edges_dbm) - 1
+    level_idx = np.digitize(10.0 * np.log10(np.maximum(power_w, 1e-30) * 1e3), level_edges_dbm) - 1
+    level_idx = np.clip(level_idx, 0, n_levels - 1)
+    # Join adjacent bins vertically, like a swept trace drawn as a line rather than dots.
+    next_idx = np.concatenate([level_idx[:, 1:], level_idx[:, -1:]], axis=1)
+    low = np.minimum(level_idx, next_idx)
+    high = np.maximum(level_idx, next_idx)
+    freq_idx = np.broadcast_to(np.arange(segment_length), level_idx.shape)
+    hits = np.zeros((segment_length, n_levels + 1))
+    np.add.at(hits, (freq_idx.ravel(), low.ravel()), 1.0)
+    np.add.at(hits, (freq_idx.ravel(), high.ravel() + 1), -1.0)
+    density = np.cumsum(hits, axis=1)[:, :n_levels].T / len(starts)
 
+    resolution_bandwidth_hz = sample_rate_hz / segment_length
+    return frequencies_hz, density, power_w.mean(axis=0), resolution_bandwidth_hz
 
 class RSTImportWorker(QThread):
     """Background thread for imported RST/RSP file analysis."""
@@ -722,10 +747,12 @@ class RSTImportWorker(QThread):
                 elif panel_name == "rx_rf_spectrum":
                     f_start_hz = fc - (bw / 2.0)
                     f_stop_hz = fc + (bw / 2.0)
-                    f_rf, p_bin_w, rbw_hz = _rx_rf_power_spectrum(
+                    level_edges_dbm = np.arange(-160.0, -59.0, 1.0)
+                    f_rf, density, p_bin_w, rbw_hz = _rx_rf_persistence_spectrum(
                         rx_passband,
                         qam_system.fs,
                         current_fc_hz,
+                        level_edges_dbm,
                     )
                     occ_start_hz = current_fc_hz - (qam_system.fs / 2.0)
                     occ_stop_hz = current_fc_hz + (qam_system.fs / 2.0)
@@ -736,11 +763,26 @@ class RSTImportWorker(QThread):
                     spec_dbm = 10.0 * np.log10(
                         np.maximum(displayed_power_w, 1e-30) * 1e3
                     )
+                    ax.set_facecolor("black")
+                    displayed_density = np.ma.masked_less_equal(density[:, displayed], 0.0)
+                    if displayed_density.count():
+                        ax.pcolormesh(
+                            displayed_freqs_hz / 1e6,
+                            0.5 * (level_edges_dbm[:-1] + level_edges_dbm[1:]),
+                            displayed_density,
+                            cmap="turbo",
+                            norm=LogNorm(
+                                vmin=max(float(displayed_density.min()), 1e-3), vmax=1.0
+                            ),
+                            shading="nearest",
+                            rasterized=True,
+                        )
                     ax.plot(
                         displayed_freqs_hz / 1e6,
                         spec_dbm,
-                        color="#1976d2",
-                        linewidth=1.1,
+                        color="white",
+                        linewidth=0.8,
+                        alpha=0.85,
                     )
                     p_total_dbm = 10.0 * np.log10(
                         np.maximum(np.sum(displayed_power_w), 1e-30) * 1e3
@@ -765,19 +807,19 @@ class RSTImportWorker(QThread):
                         title_suffix = f"SNR={snr_used_db:.1f} dB"
                     ax.set_title(
                         (
-                            f"RX RF Spectrum (Noisy)\n"
+                            f"RX RF Spectrum (Persistence)\n"
                             f"Fc={current_fc_hz/1e9:.4f} GHz | {title_suffix} | RBW={rbw_hz/1e3:.1f} kHz"
                         ),
                         fontsize=9,
                     )
-                    ax.axvline(current_fc_hz / 1e6, color="#2e7d32", linestyle="--", linewidth=1.0, alpha=0.9)
-                    ax.axvline(occ_start_hz / 1e6, color="#607d8b", linestyle=":", linewidth=0.9, alpha=0.75)
-                    ax.axvline(occ_stop_hz / 1e6, color="#607d8b", linestyle=":", linewidth=0.9, alpha=0.75)
+                    ax.axvline(current_fc_hz / 1e6, color="#00e676", linestyle="--", linewidth=1.0, alpha=0.9)
+                    ax.axvline(occ_start_hz / 1e6, color="#b0bec5", linestyle=":", linewidth=0.9, alpha=0.75)
+                    ax.axvline(occ_stop_hz / 1e6, color="#b0bec5", linestyle=":", linewidth=0.9, alpha=0.75)
                     ax.set_xlabel("Frequency (MHz)")
                     ax.set_ylabel("Power (dBm/bin)")
                     ax.set_xlim(f_start_hz / 1e6, f_stop_hz / 1e6)
-                    ax.set_ylim(-160.0, -80.0)
-                    ax.grid(True, alpha=0.4)
+                    ax.set_ylim(-160.0, -60.0)
+                    ax.grid(True, color="#9e9e9e", alpha=0.3)
 
                 elif panel_name == "channel_freq":
                     fd_db = 20.0 * np.log10(np.abs(channel_response) + 1e-30)
@@ -791,7 +833,7 @@ class RSTImportWorker(QThread):
                 elif panel_name == "channel_delay":
                     td = np.fft.ifft(channel_response * td_window)
                     td_db = 20.0 * np.log10(np.abs(td) + 1e-30)
-                    ax.plot(delay_us, td_db, color="#ff0000", linewidth=1.2, marker=".", markersize=4, alpha=0.9)
+                    ax.plot(delay_us, td_db, color="#ff9800", linewidth=1.2, marker=".", markersize=4, alpha=0.9)
                     ax.set_title("Channel Delay: Time vs Power", fontsize=10)
                     ax.set_xlabel("Delay (us)")
                     ax.set_ylabel("Power (dBW)")
@@ -1317,9 +1359,13 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
     def _build_interference_group(self):
         group = QGroupBox("Interference Sources")
         layout = QVBoxLayout()
-        self.interference_table = QTableWidget(0, 4)
+        self.interference_table = QTableWidget(0, 5)
         self.interference_table.setHorizontalHeaderLabels(
-            ["Enabled", "RFCM Link", "Waveform", "Power (dBm)"]
+            ["Enabled", "RFCM Link", "Waveform", "Power (dBm)", "Offset (MHz)"]
+        )
+        self.interference_table.horizontalHeaderItem(4).setToolTip(
+            "Interferer frequency offset from the active carrier; must lie within \u00b1fs/2 "
+            "(Data Rate / log2(M) \u00d7 Samples/Symbol / 2)."
         )
         self.interference_table.setMinimumHeight(90)
         self.interference_table.setToolTip(
@@ -1442,6 +1488,7 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             table.setCellWidget(row, 2, waveform)
             power = QTableWidgetItem("0.0")
             table.setItem(row, 3, power)
+            table.setItem(row, 4, QTableWidgetItem("0.0"))
         table.resizeColumnsToContents()
 
     @staticmethod
@@ -1829,17 +1876,22 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
             enabled = self.interference_table.cellWidget(row, 0)
             waveform = self.interference_table.cellWidget(row, 2)
             power_item = self.interference_table.item(row, 3)
+            offset_item = self.interference_table.item(row, 4)
             try:
                 power_dbm = float(power_item.text()) if power_item else 0.0
             except ValueError as exc:
                 raise ValueError("Interference powers must be numeric dBm values.") from exc
+            try:
+                offset_mhz = float(offset_item.text()) if offset_item else 0.0
+            except ValueError as exc:
+                raise ValueError("Interference frequency offsets must be numeric MHz values.") from exc
             interference.append(
                 {
                     "link": self.interference_table.item(row, 1).text(),
                     "enabled": bool(enabled and enabled.isChecked()),
                     "waveform": waveform.currentText() if waveform else "QAM",
                     "power_dbm": power_dbm,
-                    "frequency_offset_hz": 0.0,
+                    "frequency_offset_hz": offset_mhz * 1e6,
                 }
             )
         return {
@@ -1913,6 +1965,22 @@ class EndToEndCommunicationAnalysisToolkit(QMainWindow):
                 self,
                 "Interference Configuration",
                 "The desired link cannot also be selected as an interference source.",
+            )
+            return
+
+        half_fs_hz = params["symbol_rate"] * params["samples_per_symbol"] / 2.0
+        out_of_band = [
+            item["link"]
+            for item in params["interference"]
+            if item["enabled"] and abs(item["frequency_offset_hz"]) >= half_fs_hz
+        ]
+        if out_of_band:
+            QMessageBox.warning(
+                self,
+                "Interference Configuration",
+                f"Interferer frequency offsets must be within \u00b1{half_fs_hz / 1e6:.3f} MHz "
+                "of the carrier (half the simulation sample rate).\n\n"
+                "Out of range: " + ", ".join(out_of_band),
             )
             return
 
